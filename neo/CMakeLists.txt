@@ -65,6 +65,18 @@ option(TRACY		"Build and integrate the Tracy profiler, requires HARDLINK_GAME" O
 
 option(HARDLINK_GAME "Compile gamecode into executable (no game DLLs)" OFF)
 
+# P0: optional RTGL1 (Vulkan path-tracing) backend. Default OFF keeps the
+# stock ARB2/OpenGL renderer completely unchanged.
+option(D3_RTGL "Build the RTGL1 path-tracing backend (P0+P1 scaffolding)" OFF)
+# COMPILE_DEFINITIONS is set via set_target_properties() below, which OVERWRITES
+# anything added by target_compile_definitions() earlier. Fold the RTGL define
+# into a plain variable so both HARDLINK_GAME branches carry it.
+if(D3_RTGL)
+	set(D3_RTGL_COMPILE_DEFS "D3_RTGL=1")
+else()
+	set(D3_RTGL_COMPILE_DEFS "")
+endif()
+
 if(NOT MSVC) # GCC/clang or compatible, hopefully
 	option(FORCE_COLORED_OUTPUT "Always produce ANSI-colored compiler warnings/errors (GCC/Clang only; esp. useful with ninja)." OFF)
 	option(ASAN		"Enable GCC/Clang Adress Sanitizer (ASan)" OFF) # TODO: MSVC might also support this, somehow?
@@ -1285,6 +1297,31 @@ endif()
 include_directories(${CMAKE_BINARY_DIR})
 include_directories(${CMAKE_SOURCE_DIR})
 
+# ---- D3_RTGL (P0+P1) ---------------------------------------------------
+if(D3_RTGL)
+	set(src_rtgl
+		renderer/rtgl/rtgl_main.cpp
+		renderer/rtgl/rtgl_main.h
+		renderer/rtgl/rtgl_internal.h
+		renderer/rtgl/rtgl_cvars.h
+		renderer/rtgl/rtgl_stats.h
+		renderer/rtgl/rtgl_geometry.cpp
+		renderer/rtgl/rtgl_material.cpp
+		renderer/rtgl/rtgl_light.cpp
+		renderer/rtgl/rtgl_sky.cpp
+		libs/rtgl/RTGL1.h
+	)
+	# Runtime folder holding RTGL1.dll (in bin/), compiled shaders (shaders/),
+	# RTGL1.json and blue-noise ktx2. Reuse the already-built, DLL+spv-aligned
+	# gzdoom-rt runtime so we do NOT rebuild DLL/shaders (avoids layout mismatch).
+	set(D3_RTGL_RUNTIME_DIR "I:/Sandbox/gzdoom-rt/build/rt" CACHE PATH
+		"RTGL1 runtime folder (bin/RTGL1.dll, shaders/, RTGL1.json)")
+	# Generate a header with a real C string literal (avoids MSVC /D quoting).
+	file(WRITE "${CMAKE_BINARY_DIR}/rtgl_config.h"
+		"#define D3_RTGL_RUNTIME_DIR \"${D3_RTGL_RUNTIME_DIR}\"\n")
+endif()
+# ---------------------------------------------------------------------
+
 add_library(idlib STATIC ${src_idlib})
 if(SDL3)
 	target_link_libraries(idlib SDL3::Headers) # so it can use SDL_Endian.h
@@ -1333,13 +1370,18 @@ if(CORE)
 
 	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} PREFIX neo FILES ${src_core} ${src_sys_base} ${src_sys_core} ${src_imgui} ${src_editor_tools})
 
+	if(D3_RTGL)
+		target_sources(${DHEWM3BINARY} PRIVATE ${src_rtgl})
+		source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} PREFIX neo FILES ${src_rtgl})
+	endif()
+
 	target_include_directories(${DHEWM3BINARY} PRIVATE "${CMAKE_SOURCE_DIR}/libs/imgui")
 
 if(HARDLINK_GAME)
-	set_target_properties(${DHEWM3BINARY} PROPERTIES COMPILE_DEFINITIONS "${TOOLS_DEFINES}")
+	set_target_properties(${DHEWM3BINARY} PROPERTIES COMPILE_DEFINITIONS "${TOOLS_DEFINES};${D3_RTGL_COMPILE_DEFS}")
 	target_include_directories(${DHEWM3BINARY} PRIVATE ${game_includes})
 else()
-	set_target_properties(${DHEWM3BINARY} PROPERTIES COMPILE_DEFINITIONS "__DOOM_DLL__;${TOOLS_DEFINES}")
+	set_target_properties(${DHEWM3BINARY} PROPERTIES COMPILE_DEFINITIONS "__DOOM_DLL__;${TOOLS_DEFINES};${D3_RTGL_COMPILE_DEFS}")
 endif()
 	set_target_properties(${DHEWM3BINARY} PROPERTIES LINK_FLAGS "${ldflags}")
 	set_target_properties(${DHEWM3BINARY} PROPERTIES MACOSX_BUNDLE_INFO_PLIST ${PROJECT_SOURCE_DIR}/sys/osx/Info.plist)

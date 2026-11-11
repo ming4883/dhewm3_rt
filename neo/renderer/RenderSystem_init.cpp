@@ -40,6 +40,10 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "renderer/tr_local.h"
 
+#ifdef D3_RTGL
+#include "renderer/rtgl/rtgl_main.h"
+#endif
+
 #include "framework/GameCallbacks_local.h"
 #include "framework/Game.h"
 
@@ -871,6 +875,13 @@ void R_InitOpenGL( void ) {
 
 	// allocate the frame data, which may be more if smp is enabled
 	R_InitFrameData();
+
+#ifdef D3_RTGL
+	// P0+P1: create the RTGL1 (Vulkan) instance on the same SDL window. When
+	// r_rtgl_enable is 0 (default) RTGL_Init() is a no-op and the stock GL
+	// renderer is used unchanged.
+	RTGL_Init();
+#endif
 
 	// Reset our gamma
 	r_gammaInShader.ClearModified();
@@ -2498,6 +2509,10 @@ idRenderSystemLocal::ShutdownOpenGL
 ========================
 */
 void idRenderSystemLocal::ShutdownOpenGL( void ) {
+
+#ifdef D3_RTGL
+	RTGL_Shutdown();
+#endif
 
 	R_ShutdownFrameData();
 

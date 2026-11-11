@@ -1,0 +1,4 @@
+[submodule "RTGL"]
+	path = RTGL
+	url = https://github.com/ming4883/RTGL.git
+	branch = doom3

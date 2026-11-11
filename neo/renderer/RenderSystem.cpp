@@ -38,6 +38,10 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "renderer/tr_local.h"
 
+#ifdef D3_RTGL
+#include "renderer/rtgl/rtgl_main.h"
+#endif
+
 idRenderSystemLocal	tr;
 idRenderSystem	*renderSystem = &tr;
 
@@ -140,6 +144,18 @@ static void R_IssueRenderCommands( void ) {
 		// nothing to issue
 		return;
 	}
+
+#ifdef D3_RTGL
+	// RTGL1 owns its Vulkan swapchain and presents from RTGL_EndFrame();
+	// skip the entire GL backend command queue.
+	if ( RTGL_IsActive() ) {
+		// P2/P3: feed camera + geometry + original textures to RTGL1
+		// from this frame's command chain before it is cleared.
+		RTGL_SubmitFrameCommands( frameData->cmdHead );
+		R_ClearCommandChain();
+		return;
+	}
+#endif
 
 	// r_skipBackEnd allows the entire time of the back end
 	// to be removed from performance measurements, although
@@ -581,6 +597,12 @@ void idRenderSystemLocal::BeginFrame( int windowWidth, int windowHeight ) {
 		return;
 	}
 
+#ifdef D3_RTGL
+	if ( RTGL_IsActive() ) {
+		RTGL_BeginFrame( windowWidth, windowHeight );
+	}
+#endif
+
 	// DG: r_lockSurfaces only works properly if r_useScissor is disabled
 	if ( r_lockSurfaces.IsModified() ) {
 		static bool origUseScissor = true;
@@ -711,6 +733,12 @@ void idRenderSystemLocal::EndFrame( int *frontEndMsec, int *backEndMsec ) {
 	// may still be rendering into the current buffers
 
 	R_ToggleSmpFrame();
+
+#ifdef D3_RTGL
+	if ( RTGL_IsActive() ) {
+		RTGL_EndFrame();
+	}
+#endif
 
 	// we can now release the vertexes used this frame
 	vertexCache.EndFrame();

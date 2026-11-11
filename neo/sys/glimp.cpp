@@ -45,6 +45,10 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "sys/sys_imgui.h"
 
+#if defined(D3_RTGL) && defined(_WIN32) && !SDL_VERSION_ATLEAST(3, 0, 0)
+	#include <SDL_syswm.h>
+#endif
+
 #if defined(_WIN32) && defined(ID_ALLOW_TOOLS)
 #include "sys/win32/win_local.h"
 
@@ -1124,6 +1128,34 @@ void GLimp_Shutdown() {
 	}
 #endif
 }
+
+#ifdef D3_RTGL
+/*
+===================
+GLimp_GetWin32WindowHandle
+
+Returns the HWND of the SDL window so the RTGL1 Vulkan backend can create
+its own surface on the same window. Returns NULL on non-Win32 builds.
+===================
+*/
+void *GLimp_GetWin32WindowHandle( void ) {
+#if defined(_WIN32) && SDL_VERSION_ATLEAST(3, 0, 0)
+	if ( window ) {
+		return SDL_GetPointerProperty( SDL_GetWindowProperties( window ),
+			SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL );
+	}
+#elif defined(_WIN32) && SDL_VERSION_ATLEAST(2, 0, 0)
+	SDL_SysWMinfo sdlinfo;
+	SDL_version sdlver;
+	SDL_VERSION( &sdlver );
+	sdlinfo.version = sdlver;
+	if ( window && SDL_GetWindowWMInfo( window, &sdlinfo ) && sdlinfo.subsystem == SDL_SYSWM_WINDOWS ) {
+		return (void *)sdlinfo.info.win.window;
+	}
+#endif
+	return NULL;
+}
+#endif
 
 /*
 ===================
