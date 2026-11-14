@@ -70,6 +70,10 @@ idCVar rt_emissive_mult(        "rt_emissive_mult",        "0.001", CVAR_RENDERE
                                 "multiplier on surface emission when enabled" );
 idCVar rt_normalmap_enable(    "rt_normalmap_enable",    "1", CVAR_RENDERER | CVAR_BOOL,
                                 "1 = bind the material bump stage as an in-memory tangent-space normal map (Plan B); 0 = off" );
+idCVar rt_ui_enable(           "rt_ui_enable",           "1", CVAR_RENDERER | CVAR_BOOL,
+                                "1 = compose in-game 2D GUI (console/menu/HUD) via RTGL1 swapchain overlays (Plan B UI); 0 = off" );
+idCVar rt_ui_flipY(            "rt_ui_flipY",            "0", CVAR_RENDERER | CVAR_BOOL,
+                                "1 = vertically flip the in-game 2D overlay (set if the console/HUD appears upside down)" );
 
 // P4 lights / sky / illumination (non-ARCHIVE on purpose)
 // Calibration defaults (2026-11-12): RTGL1 treats sphere/spot intensity as
@@ -372,7 +376,8 @@ void RTGL_SubmitFrameCommands( const void *commandChainHead ) {
     if ( !rgActive || !rgFrameStarted ) return;
     RTGL_SubmitCommands( commandChainHead );   // P2/P3: camera + geometry + textures
     RTGL_SubmitLights( commandChainHead );     // P4: viewLights -> RgLight
-    RTGL_ReportStats();                        // after both, so all counters are final
+    RTGL_SubmitUI( commandChainHead );         // P-UI: 2D GUI/console/HUD swapchain overlays
+    RTGL_ReportStats();                        // after all, so all counters are final
 }
 
 void RTGL_BeginFrame( int windowWidth, int windowHeight ) {

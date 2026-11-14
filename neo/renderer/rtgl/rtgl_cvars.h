@@ -23,6 +23,8 @@ extern idCVar rt_decal_mode;         // multiply-blend decals: 0 legacy, 1 baked
 extern idCVar rt_emissive_enable;      // 1 = enable mesh light emission from blend-add surfaces (default 1, 2026-11-14 restored)
 extern idCVar rt_emissive_mult;        // multiplier on surface emission when enabled (default 0.1)
 extern idCVar rt_normalmap_enable;   // 1 = bind Doom3 bump stages as in-memory normal maps (Plan B, default 1)
+extern idCVar rt_ui_enable;          // 1 = compose in-game 2D GUI (console/menu/HUD) as RTGL1 swapchain overlays (default 1)
+extern idCVar rt_ui_flipY;           // 1 = vertically flip the 2D overlay (if console/HUD renders upside down)
 
 // P4 lights / sky / illumination (non-ARCHIVE on purpose)
 extern idCVar rt_light_enable;          // master switch for viewLight -> RgLight upload

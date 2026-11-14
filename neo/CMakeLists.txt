@@ -1309,6 +1309,7 @@ if(D3_RTGL)
 		renderer/rtgl/rtgl_material.cpp
 		renderer/rtgl/rtgl_light.cpp
 		renderer/rtgl/rtgl_sky.cpp
+		renderer/rtgl/rtgl_ui.cpp
 		libs/rtgl/RTGL1.h
 	)
 	# Runtime folder holding RTGL1.dll (in bin/), compiled shaders (shaders/),

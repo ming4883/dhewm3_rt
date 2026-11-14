@@ -62,6 +62,7 @@ RgColor4DPacked32  RTGL_DebugColor( int mode, uint64_t objectID, int primIndex,
 void         RTGL_MaterialBeginFrame( void );
 void         RTGL_MaterialShutdown( void );
 const char * RTGL_PrimaryTexture( const idMaterial *mat );  // stable name, lazily provided
+const char * RTGL_GuiTexture( const idMaterial *mat );      // P-UI: GUI/2D texture name, or NULL (= RTGL1 white)
 bool         RTGL_IsDecal( const idMaterial *mat );  // multiply-blend decal detection (by blend bits, not sort)
 void         RTGL_ClassifyMaterial( const idMaterial *mat,
                                     RgMeshPrimitiveFlags *outFlags, float *outEmissive );
@@ -71,6 +72,7 @@ void         RTGL_ClassifyMaterial( const idMaterial *mat,
 // ---------------------------------------------------------------------------
 void         RTGL_LightBeginFrame( void );                    // reset per-frame light-id registry
 void         RTGL_SubmitLights( const void *cmdHead );       // walk viewLights, rgUploadLight
+void         RTGL_SubmitUI( const void *cmdHead );           // P-UI: 2D GUI views -> swapchained overlay primitives
 void         RTGL_BuildSkyParams( RgDrawFrameSkyParams *sky );
 void         RTGL_BuildIlluminationParams( RgDrawFrameIlluminationParams *illum );
 

@@ -270,6 +270,26 @@ const char * RTGL_PrimaryTexture( const idMaterial *mat ) {
     return name;
 }
 
+// P-UI (Plan B): pick and provide the texture for a 2D/GUI material.
+// Returns a stable texture name, or NULL when the material has no 2D image
+// (e.g. the builtin "_white" used for console bars / solid quads). NULL makes
+// RTGL1 sample its 1x1 empty-white texture, so the primitive color alone shows.
+// Unlike RTGL_PrimaryTexture we do NOT bake decal alpha and do NOT attach a
+// normal map: both are meaningless for screen-space UI quads.
+const char * RTGL_GuiTexture( const idMaterial *mat ) {
+    if ( !mat ) { return NULL; }
+    for ( int i = 0; i < mat->GetNumStages(); i++ ) {
+        const shaderStage_t *stage = mat->GetStage( i );
+        if ( !stage || !stage->texture.image ) { continue; }
+        const idImage *img = stage->texture.image;
+        if ( img->type != TT_2D || img->imgName.Length() <= 0 ) { continue; }
+        const char *name = img->imgName.c_str();
+        RTGL_ProvideTexture( name, name, 0, NULL );
+        return name;
+    }
+    return NULL;
+}
+
 void RTGL_ClassifyMaterial( const idMaterial *mat,
                             RgMeshPrimitiveFlags *outFlags, float *outEmissive ) {
     RgMeshPrimitiveFlags flags = 0;

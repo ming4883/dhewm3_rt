@@ -297,6 +297,9 @@ void RTGL_ReportStats( void ) {
         g_rtglStats.skippedFog, g_rtglStats.skippedBlend,
         g_rtglStats.skippedNoShadow, g_rtglStats.lightDuplicates,
         g_rtglStats.failedLightUploads );
+    common->Printf( "[RTGL] frame %d | ui surfs=%d prims=%d verts=%d\n",
+        g_rtglFrameIndex, g_rtglStats.uiSurfs, g_rtglStats.uiPrims,
+        g_rtglStats.uiVerts );
 }
 
 void RTGL_SubmitCommands( const void *cmdHead ) {
@@ -313,7 +316,10 @@ void RTGL_SubmitCommands( const void *cmdHead ) {
     for ( const emptyCommand_t *c = cmd; c; c = (const emptyCommand_t *)c->next ) {
         if ( c->commandId == RC_DRAW_VIEW ) {
             const drawSurfsCommand_t *dv = (const drawSurfsCommand_t *)c;
-            if ( dv->viewDef && !dv->viewDef->isSubview && !dv->viewDef->isMirror ) {
+            // P-UI: 2D/GUI views (viewEntitys==NULL) are pure overlays and
+            // carry no usable camera; only a real 3D view may supply one.
+            if ( dv->viewDef && dv->viewDef->viewEntitys &&
+                 !dv->viewDef->isSubview && !dv->viewDef->isMirror ) {
                 camView = dv->viewDef;
                 break;
             }
@@ -332,6 +338,9 @@ void RTGL_SubmitCommands( const void *cmdHead ) {
         const drawSurfsCommand_t *dv = (const drawSurfsCommand_t *)c;
         const viewDef_t *v = dv->viewDef;
         if ( !v ) { continue; }
+        // P-UI: 2D/GUI views are handled by RTGL_SubmitUI (swapchain overlays),
+        // not by the world-geometry path (RTGL_SubmitSurf drops sort<0 anyway).
+        if ( !v->viewEntitys ) { continue; }
         if ( rt_dbg_skipSubViews.GetBool() &&
              ( v->isSubview || v->isMirror || v->isXraySubview ) ) {
             continue;

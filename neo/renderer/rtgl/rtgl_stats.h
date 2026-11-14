@@ -18,6 +18,9 @@ struct rtglFrameStats_t {
     int drawSurfsSeen;       // total drawSurfs across all RC_DRAW_VIEW commands
     int texturesProvided;    // P3: rgProvideOriginalTexture calls (unique, this session)
     int idCollisions;        // P2.5: duplicate uniqueObjectID seen this frame
+    int uiSurfs;             // P-UI: GUI drawSurfs seen in 2D views
+    int uiPrims;             // P-UI: swapchained overlay primitives uploaded
+    int uiVerts;             // P-UI: overlay vertices uploaded
 
     // P4
     int lightsSeen;          // viewLights on all RC_DRAW_VIEW views
@@ -47,6 +50,9 @@ struct rtglFrameStats_t {
         drawSurfsSeen = 0;
         texturesProvided = 0;
         idCollisions = 0;
+        uiSurfs = 0;
+        uiPrims = 0;
+        uiVerts = 0;
         lightsSeen = 0;
         lightsUploaded = 0;
         sphereLights = 0;
