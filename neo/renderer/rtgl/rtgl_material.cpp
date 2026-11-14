@@ -39,9 +39,10 @@
 //  The baked image is provided under a DERIVED name ("<orig>@rtgl_dN") so it
 //  never clobbers the un-baked texture used by other (opaque) materials.
 //
-// Scope note: first-pass link-through for high-frequency diffuse materials;
-// multi-stage bump/specular layering, PBR overrides, scroll/deform and fog are
-// deliberately left for P3 iteration / P7.
+// Scope note: diffuse albedo + tangent-space NORMAL MAP (Plan B, 2026-11-14)
+// are now wired (in-memory, via RgOriginalTextureNormalMapEXT pNext).
+// Multi-stage specular layering, PBR overrides, per-stage scroll/deform UVs
+// and fog are still deliberately left for P3 iteration / P7.
 // ===========================================================================
 
 static idList<idStr>  s_provided;       // names already handed to rgProvideOriginalTexture
@@ -92,6 +93,21 @@ static const char * RTGL_DerivedName( const char *base, int mode ) {
     return s->c_str();
 }
 
+// Return the image-program name of the material's bump/normal-map stage, or
+// NULL when normal maps are disabled or there is no 2D bump stage.
+// A Doom3 "bumpmap" (and heightmap(...)/addnormals(...) image programs) is
+// already resolved to a tangent-space normal map by R_LoadImageProgram
+// (R_HeightmapToNormalMap): RGBA8 with RGB = XYZ normal, A = height -- the
+// exact layout RTGL1's "_n" slot samples in HitInfo.inl.
+static const char * RTGL_NormalMapName( const idMaterial *mat ) {
+    if ( !rt_normalmap_enable.GetBool() ) { return NULL; }
+    const shaderStage_t *bump = mat ? mat->GetBumpStage() : NULL;
+    if ( !bump || !bump->texture.image ) { return NULL; }
+    const idImage *img = bump->texture.image;
+    if ( img->type != TT_2D || img->imgName.Length() <= 0 ) { return NULL; }
+    return img->imgName.c_str();
+}
+
 // Classify a material by its BLEND drawStateBits. Returns the "bake mode":
 //   0 = not a multiply-blend decal (no alpha bake)
 //   1 = multiply / filter          (WHITE = transparent)
@@ -131,7 +147,7 @@ static int RTGL_DecalBakeMode( const idMaterial *mat ) {
 // Load `loadName`'s RGBA, optionally bake a coverage alpha from RGB, and hand
 // it to RTGL1 under `provideName`. Names are cached (s_provided) so each key is
 // uploaded once per session.
-static void RTGL_ProvideTexture( const char *loadName, const char *provideName, int bakeMode ) {
+static void RTGL_ProvideTexture( const char *loadName, const char *provideName, int bakeMode, const char *normalLoadName ) {
     if ( !loadName || !loadName[0] || !provideName || !provideName[0] ) { return; }
     if ( RTGL_WasProvided( provideName ) ) { return; }
     if ( !rg.rgProvideOriginalTexture ) { return; }
@@ -171,9 +187,33 @@ static void RTGL_ProvideTexture( const char *loadName, const char *provideName, 
         }
     }
 
+    // Optionally load the tangent-space normal map and chain it as the
+    // "_n" companion of this material (Plan B, 2026-11-14). The pNext EXT
+    // makes RTGL1 bind these pixels to the normal slot without any disk
+    // "<material>_n" asset. Pixels only need to outlive this call.
+    byte *nrmPic = NULL;
+    int nrmW = 0, nrmH = 0;
+    ID_TIME_T nrmTimestamp = 0;
+    textureDepth_t nrmDepth = TD_DEFAULT;
+    if ( normalLoadName && normalLoadName[0] ) {
+        R_LoadImageProgram( normalLoadName, &nrmPic, &nrmW, &nrmH, &nrmTimestamp, &nrmDepth );
+        if ( !nrmPic || nrmW <= 0 || nrmH <= 0 ) {
+            if ( nrmPic ) { R_StaticFree( nrmPic ); }
+            nrmPic = NULL;
+        }
+    }
+
+    RgOriginalTextureNormalMapEXT nrm = {};
+    if ( nrmPic ) {
+        nrm.sType = RG_STRUCTURE_TYPE_ORIGINAL_TEXTURE_NORMAL_MAP_EXT;
+        nrm.pNext = NULL;
+        nrm.pPixels = nrmPic;
+        nrm.size = RTGL_Ext( (uint32_t)nrmW, (uint32_t)nrmH );
+    }
+
     RgOriginalTextureInfo info = {};
     info.sType = RG_STRUCTURE_TYPE_ORIGINAL_TEXTURE_INFO;
-    info.pNext = NULL;
+    info.pNext = nrmPic ? &nrm : NULL;
     info.pTextureName = provideName;
     info.pPixels = pic;
     info.size = RTGL_Ext( (uint32_t)width, (uint32_t)height );
@@ -183,6 +223,7 @@ static void RTGL_ProvideTexture( const char *loadName, const char *provideName, 
 
     RgResult r = rg.rgProvideOriginalTexture( &info );
     R_StaticFree( pic );
+    if ( nrmPic ) { R_StaticFree( nrmPic ); }
 
     if ( r == RG_RESULT_SUCCESS || r == RG_RESULT_SUCCESS_FOUND_TEXTURE ) {
         s_provided.Append( idStr( provideName ) );
@@ -218,13 +259,14 @@ const char * RTGL_PrimaryTexture( const idMaterial *mat ) {
     if ( !chosen || chosen->imgName.Length() <= 0 ) { return NULL; }
 
     const char *name = chosen->imgName.c_str();
+    const char *nrmName = RTGL_NormalMapName( mat );
     int bake = RTGL_DecalBakeMode( mat );
     if ( bake != 0 ) {
         const char *derived = RTGL_DerivedName( name, bake );
-        RTGL_ProvideTexture( name, derived, bake );
+        RTGL_ProvideTexture( name, derived, bake, nrmName );
         return derived;
     }
-    RTGL_ProvideTexture( name, name, 0 );
+    RTGL_ProvideTexture( name, name, 0, nrmName );
     return name;
 }
 

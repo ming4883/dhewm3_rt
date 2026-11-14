@@ -64,10 +64,12 @@ idCVar rt_dbg_lightViz(    "rt_dbg_lightViz",    "0", CVAR_RENDERER | CVAR_INTEG
 // P3 material / decal handling (non-ARCHIVE on purpose)
 idCVar rt_decal_mode(           "rt_decal_mode",           "1", CVAR_RENDERER | CVAR_INTEGER,
                                 "multiply-blend decals: 0 legacy, 1 baked-alpha cutout (default), 2 skip, 3 DECAL overlay; bakes coverage alpha from RGB (decal TGAs have no alpha)" );
-idCVar rt_emissive_enable(      "rt_emissive_enable",      "0", CVAR_RENDERER | CVAR_BOOL,
-                                "0 = disable mesh light emission from blend-add surfaces; prevents massive billboards/flares from flooding scene with GI" );
-idCVar rt_emissive_mult(        "rt_emissive_mult",        "1.0", CVAR_RENDERER | CVAR_FLOAT,
+idCVar rt_emissive_enable(      "rt_emissive_enable",      "1", CVAR_RENDERER | CVAR_BOOL,
+                                "1 = enable mesh light emission from blend-add surfaces (0 = disable); scale via rt_emissive_mult; 2026-11-14 restored at low mult" );
+idCVar rt_emissive_mult(        "rt_emissive_mult",        "0.001", CVAR_RENDERER | CVAR_FLOAT,
                                 "multiplier on surface emission when enabled" );
+idCVar rt_normalmap_enable(    "rt_normalmap_enable",    "1", CVAR_RENDERER | CVAR_BOOL,
+                                "1 = bind the material bump stage as an in-memory tangent-space normal map (Plan B); 0 = off" );
 
 // P4 lights / sky / illumination (non-ARCHIVE on purpose)
 // Calibration defaults (2026-11-12): RTGL1 treats sphere/spot intensity as
@@ -97,8 +99,8 @@ idCVar rt_light_refRadius(     "rt_light_refRadius",     "256", CVAR_RENDERER | 
                                "extent (Doom units) that maps to the unscaled base intensity" );
 idCVar rt_light_dirIntensity(   "rt_light_dirIntensity",   "2", CVAR_RENDERER | CVAR_FLOAT,
                                 "illuminance (lux) for imported parallel/directional lights; sharing rt_light_intensity flooded the whole scene" );
-idCVar rt_light_skipParallel(   "rt_light_skipParallel",   "1", CVAR_RENDERER | CVAR_BOOL,
-                                "skip imported p.parallel lights (default): RTGL1 directional = ONE unbounded GLOBAL sun, but Doom3 parallel lights are bounded/frustum-culled via viewLights, so importing them makes the whole scene pop bright/dark on a ~5 deg camera rotation (mars_city1 start). Use rt_sun_enable for a view-independent global sun; 0 = legacy import (will pop)" );
+idCVar rt_light_skipParallel(   "rt_light_skipParallel",   "0", CVAR_RENDERER | CVAR_BOOL,
+                                "0 = import p.parallel lights as directional (2026-11-14 restored); 1 = skip them (RTGL1 directional = ONE unbounded GLOBAL sun, but Doom3 parallel lights are bounded/frustum-culled, so importing them can pop the whole scene bright/dark on a ~5 deg camera rotation, mars_city1 start). Use rt_sun_enable for a view-independent global sun" );
 idCVar rt_light_radiusScale(   "rt_light_radiusScale",   "0.02", CVAR_RENDERER | CVAR_FLOAT,
                                "scale on spherical/spot light radius (raw Doom units)" );
 idCVar rt_light_maxLights(     "rt_light_maxLights",     "0", CVAR_RENDERER | CVAR_INTEGER,
@@ -127,11 +129,11 @@ idCVar rt_sun_dirZ(            "rt_sun_dirZ",            "-1.0", CVAR_RENDERER |
 idCVar rt_sky_colorR(          "rt_sky_colorR",          "0.10", CVAR_RENDERER | CVAR_FLOAT, "sky color R (linear)" );
 idCVar rt_sky_colorG(          "rt_sky_colorG",          "0.12", CVAR_RENDERER | CVAR_FLOAT, "sky color G (linear)" );
 idCVar rt_sky_colorB(          "rt_sky_colorB",          "0.16", CVAR_RENDERER | CVAR_FLOAT, "sky color B (linear)" );
-idCVar rt_sky_brightness(      "rt_sky_brightness",      "0.0", CVAR_RENDERER | CVAR_FLOAT,
+idCVar rt_sky_brightness(      "rt_sky_brightness",      "0.5", CVAR_RENDERER | CVAR_FLOAT,
                                "skyColorMultiplier (visible backdrop brightness)" );
-idCVar rt_sky_light(           "rt_sky_light",           "0.0", CVAR_RENDERER | CVAR_FLOAT,
+idCVar rt_sky_light(           "rt_sky_light",           "2.0", CVAR_RENDERER | CVAR_FLOAT,
                                "skyLightMultiplier (indirect/ambient fill)" );
-idCVar rt_sky_lightScale(      "rt_sky_lightScale",      "0.0", CVAR_RENDERER | CVAR_FLOAT,
+idCVar rt_sky_lightScale(      "rt_sky_lightScale",      "1.0", CVAR_RENDERER | CVAR_FLOAT,
                                "live skyLightScale" );
 idCVar rt_bounce_enableSecond( "rt_bounce_enableSecond", "1", CVAR_RENDERER | CVAR_BOOL,
                                "enableSecondBounceForIndirect (GI + reflections)" );

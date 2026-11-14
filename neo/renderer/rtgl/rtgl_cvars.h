@@ -20,14 +20,15 @@ extern idCVar rt_dbg_dumpLights;  // per-light list every N frames (0 = off); vi
 extern idCVar rt_dbg_printRepeat; // suppress repeated RTGL1 log messages (print 1st, then every N; 0 = off)
 extern idCVar rt_dbg_lightViz; // 0 off, 1 solid sphere, 2 wireframe (A: in-scene light gizmos at true radius)
 extern idCVar rt_decal_mode;         // multiply-blend decals: 0 legacy, 1 baked-alpha cutout, 2 skip, 3 DECAL overlay
-extern idCVar rt_emissive_enable;      // 0 = disable mesh light emission from blend-add surfaces (default 0)
-extern idCVar rt_emissive_mult;        // multiplier on surface emission when enabled (default 1.0)
+extern idCVar rt_emissive_enable;      // 1 = enable mesh light emission from blend-add surfaces (default 1, 2026-11-14 restored)
+extern idCVar rt_emissive_mult;        // multiplier on surface emission when enabled (default 0.1)
+extern idCVar rt_normalmap_enable;   // 1 = bind Doom3 bump stages as in-memory normal maps (Plan B, default 1)
 
 // P4 lights / sky / illumination (non-ARCHIVE on purpose)
 extern idCVar rt_light_enable;          // master switch for viewLight -> RgLight upload
 extern idCVar rt_light_intensity;       // global scale on imported (sphere/spot) light intensity
 extern idCVar rt_light_dirIntensity; // dedicated illuminance (lux) for parallel/directional lights
-extern idCVar rt_light_skipParallel; // default 1: skip bounded p.parallel lights (global-sun view pop); 0 = legacy import
+extern idCVar rt_light_skipParallel; // default 0: import bounded p.parallel lights (2026-11-14 restored); 1 = skip (avoids global-sun view pop)
 extern idCVar rt_light_radiusScale;     // scale on spherical/spot light radius
 extern idCVar rt_light_sizeExponent;    // auto intensity *= (extent/refRadius)^sizeExponent; 0 = flat legacy (default 2)
 extern idCVar rt_light_refRadius;       // extent normalization for sizeExponent (default 256)

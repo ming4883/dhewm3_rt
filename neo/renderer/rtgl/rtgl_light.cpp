@@ -15,7 +15,7 @@
 //
 //   parms.pointLight                      -> RgLightSphericalEXT
 //   projected light (has target/frustum)  -> RgLightSpotEXT   (cookie ~ spot)
-//   parms.parallel                        -> RgLightDirectionalEXT  (SKIPPED by default, see block below)
+//   parms.parallel                        -> RgLightDirectionalEXT  (enabled by default; rt_light_skipParallel 1 to skip)
 //   lightShader fog / blend               -> skipped (no RTGL1 equivalent)
 //   noShadows                             -> kept; RTGL1 shadow rays are physical
 //   rt_sun_enable                         -> one extra directional light (view-INDEPENDENT global sun)
@@ -37,10 +37,11 @@
 //      (radius "32 48 32") and "nodiffuse 1 nospecular 1 falloff 0" so they
 //      light no surfaces in the original game -> rotating the camera caused no
 //      brightness change there, but imported as a global sun it pops.
-//   Fix: skip imported p.parallel lights by default (rt_light_skipParallel=1).
-//   directionalLightExists is then driven ONLY by rt_sun_enable, which is
-//   injected view-independently every frame -> no pop. For a genuine global sun
-//   use rt_sun_enable (hand-tuned direction/intensity) instead.
+//   Mitigation (11-13): rt_light_skipParallel=1 skipped imported p.parallel
+//   lights; directionalLightExists was then driven ONLY by rt_sun_enable
+//   (injected view-independently every frame -> no pop).
+//   2026-11-14: support RESTORED (rt_light_skipParallel default back to 0).
+//   If the pop returns, set rt_light_skipParallel 1 or use rt_sun_enable instead.
 //
 // COORDINATE / SCALE CONTRACT (important):
 //   P2 submits geometry in RAW DOOM engine units, and RTGL1 does NOT scale
