@@ -146,8 +146,45 @@ static void RTGL_SubmitSurf( const drawSurf_t *surf, int ordinal ) {
 
     // --- idDrawVert -> RgPrimitiveVertex ---
     int nv = tri->numVerts;
+    int ni = tri->numIndexes;
     s_verts.SetNum( nv );
     memset( s_verts.Ptr(), 0, nv * sizeof( RgPrimitiveVertex ) );
+    // --- Align uploaded vertex normals to RTGL1's geometric hemisphere ----
+    // HitInfo.inl flips h.normal / exactNormal together to face the viewer and
+    // then calls sanitizeNormal(); BOTH assume the smoothed vertex normal agrees
+    // with the geometric face normal cross(e1,e2). Doom3 uses clockwise winding
+    // and inward-facing vertex normals (see R_ReverseTriangles in tr_trisurf.cpp,
+    // which negates verts[].normal when flipping a two-sided surface), so
+    // idDrawVert.normal is systematically OPPOSITE to RTGL1's cross(e1,e2).
+    // FORCE_EXACT_NORMALS ignored the uploaded normal (correct lighting); once we
+    // enabled smoothed vertex normals (DONT_GENERATE_NORMALS), they landed in the
+    // wrong hemisphere -> sanitizeNormal bent them into arbitrary directions
+    // (the whole normal field looked "rotated") and dot(n,light)<0 -> black.
+    //
+    // Do NOT hardcode a negation: derive the sign from the SAME positions we are
+    // about to upload, so this is correct regardless of winding convention. Sum
+    // dot(faceNormal, sum(vertexNormals)) over all triangles; if negative, flip
+    // every uploaded normal into the geometric hemisphere. This keeps smoothness
+    // (interpolated vertex normals) while guaranteeing agreement with cross().
+    // Computed in object space: RTGL1 applies the same orthonormal instance
+    // rotation to both positions and normals, which preserves the dot sign.
+    float align = 0.0f;
+    for ( int t = 0; t + 2 < ni; t += 3 ) {
+        const idDrawVert &A = tri->verts[ tri->indexes[ t + 0 ] ];
+        const idDrawVert &B = tri->verts[ tri->indexes[ t + 1 ] ];
+        const idDrawVert &C = tri->verts[ tri->indexes[ t + 2 ] ];
+        float e1x = B.xyz.x - A.xyz.x, e1y = B.xyz.y - A.xyz.y, e1z = B.xyz.z - A.xyz.z;
+        float e2x = C.xyz.x - A.xyz.x, e2y = C.xyz.y - A.xyz.y, e2z = C.xyz.z - A.xyz.z;
+        float gx = e1y * e2z - e1z * e2y;
+        float gy = e1z * e2x - e1x * e2z;
+        float gz = e1x * e2y - e1y * e2x;
+        float vx = A.normal.x + B.normal.x + C.normal.x;
+        float vy = A.normal.y + B.normal.y + C.normal.y;
+        float vz = A.normal.z + B.normal.z + C.normal.z;
+        align += gx * vx + gy * vy + gz * vz;
+    }
+    const float nsign = ( align < 0.0f ) ? -1.0f : 1.0f;
+
     RgColor4DPacked32 vcolor = RTGL_White();
     for ( int i = 0; i < nv; i++ ) {
         const idDrawVert &src = tri->verts[i];
@@ -155,7 +192,13 @@ static void RTGL_SubmitSurf( const drawSurf_t *surf, int ordinal ) {
         dst.position[0]  = src.xyz.x;
         dst.position[1]  = src.xyz.y;
         dst.position[2]  = src.xyz.z;
-        dst.normalPacked = RTGL_PackNormal( src.normal.x, src.normal.y, src.normal.z );
+        // Upload in entity/object space (nsign aligns hemisphere; see above).
+        // RTGL1 getTriangle() (VertexData.inl:526-531) transforms decoded normals
+        // to world space with the instance matrix (w=0), just like positions --
+        // do NOT pre-rotate on the CPU (double transform -> black characters).
+        dst.normalPacked = RTGL_PackNormal( nsign * src.normal.x,
+                                           nsign * src.normal.y,
+                                           nsign * src.normal.z );
         dst.texCoord[0]  = src.st.x;
         dst.texCoord[1]  = src.st.y;
         dst.color        = vcolor;
@@ -163,7 +206,6 @@ static void RTGL_SubmitSurf( const drawSurf_t *surf, int ordinal ) {
     }
 
     // --- glIndex_t (int) -> uint32_t ---
-    int ni = tri->numIndexes;
     s_indices.SetNum( ni );
     for ( int i = 0; i < ni; i++ ) {
         s_indices[i] = (uint32_t)tri->indexes[i];
@@ -173,7 +215,14 @@ static void RTGL_SubmitSurf( const drawSurf_t *surf, int ordinal ) {
     RgMeshPrimitiveFlags primFlags = 0;
     float emissive = 0.0f;
     RTGL_ClassifyMaterial( surf->material, &primFlags, &emissive );
-    primFlags |= RG_MESH_PRIMITIVE_FORCE_EXACT_NORMALS;
+    // P2 fix (2026-11-14): use SMOOTH per-vertex normals from idDrawVert.
+    // RTGL1 defaults to GENERATE_NORMALS (overwrites uploaded vertex normals
+    // with face normals in CmVertexPreprocess), and FORCE_EXACT_NORMALS makes
+    // HitInfo.inl use cross(edge1,edge2) directly -> both give flat shading.
+    // Setting DONT_GENERATE_NORMALS preserves the uploaded (already-smoothed)
+    // normals; omitting FORCE_EXACT_NORMALS selects the interpolated vertex
+    // normal in HitInfo.inl:319-322 (RTGL1 transforms them to world space).
+    primFlags |= RG_MESH_PRIMITIVE_DONT_GENERATE_NORMALS;
     const char *texName = RTGL_PrimaryTexture( surf->material );
 
     int colorMode = rt_dbg_colorMode.GetInteger();
