@@ -103,15 +103,24 @@ echo [NOTE] P1 expected result = stable BLACK screen + no Vulkan errors.
   echo           to native Vulkan automatically if D3D12/DXGI is unavailable.
 echo.
 
+set "CFG_SRC=%~dp0rtgl-debug.cfg"
+set "CFG_DIR=%USERPROFILE%\Documents\My Games\dhewm3\base"
+
 if defined D3RTGL_DRYRUN (
   echo [DRYRUN] all path checks passed; would launch:
+  echo   copy "%CFG_SRC%" "%CFG_DIR%\rtgl-debug.cfg"
   echo   pushd "%RTGL_BIN%"
   echo   PATH prepend "%STOCK_BIN%"
-  echo   "%RTGL_EXE%" +set r_rtgl_enable 1 +set r_rtgl_overridePath "%RTGL_URI%" +set fs_basepath "%GAMEDATA%" +set r_fullscreen 0 +set win_viewlog 1 +set rt_dbg_dumpLights 60 %*
+  echo   "%RTGL_EXE%" +set r_rtgl_enable 1 +set r_rtgl_overridePath "%RTGL_URI%" +set fs_basepath "%GAMEDATA%" +set r_fullscreen 0 +set win_viewlog 1 +exec rtgl-debug.cfg %*
   goto :done
 )
 
 :run
+REM Sync rtgl-debug.cfg into VFS fs_configpath\base so +exec rtgl-debug.cfg finds it.
+if exist "%CFG_SRC%" (
+  if not exist "%CFG_DIR%" mkdir "%CFG_DIR%" 2>nul
+  copy /Y "%CFG_SRC%" "%CFG_DIR%\rtgl-debug.cfg" >nul
+)
 REM SDL2/OpenAL/libcurl are implicit imports: loader also searches PATH.
 set "PATH=%STOCK_BIN%;%PATH%"
 REM --- D3D12 Agility SDK: DXGI present loads D3D12Core.dll from "rt\bin\"
@@ -121,7 +130,7 @@ if not exist "%RTGL_BIN%\rt\bin\D3D12Core.dll" if exist "%RTGL_BIN%\rt" rmdir "%
 if not exist "%RTGL_BIN%\rt\bin\D3D12Core.dll" mklink /J "%RTGL_BIN%\rt" "%RTGL_DIR%" >nul
 REM CWD = exe dir so base.dll / d3xp.dll resolve there.
 pushd "%RTGL_BIN%"
-"%RTGL_EXE%" +set r_rtgl_enable 1 +set r_rtgl_overridePath "%RTGL_URI%" +set fs_basepath "%GAMEDATA%" +set r_fullscreen 0 +set win_viewlog 1 +set rt_dbg_dumpLights 60 %*
+"%RTGL_EXE%" +set r_rtgl_enable 1 +set r_rtgl_overridePath "%RTGL_URI%" +set fs_basepath "%GAMEDATA%" +set r_fullscreen 0 +set win_viewlog 1 +exec rtgl-debug.cfg %*
 set "RC=%ERRORLEVEL%"
 popd
 if "%RC%"=="0" goto :done

@@ -25,6 +25,12 @@ extern idCVar rt_emissive_mult;        // multiplier on surface emission when en
 extern idCVar rt_normalmap_enable;   // 1 = bind Doom3 bump stages as in-memory normal maps (Plan B, default 1)
 extern idCVar rt_ui_enable;          // 1 = compose in-game 2D GUI (console/menu/HUD) as RTGL1 swapchain overlays (default 1)
 extern idCVar rt_ui_flipY;           // 1 = vertically flip the 2D overlay (if console/HUD renders upside down)
+extern idCVar rt_ui_worldGuis;       // 1 = draw in-world interactive GUI surfaces (terminals/keypads/screens)
+extern idCVar rt_ui_worldGuisFlipY;  // 1 = vertically flip in-world GUI overlay (safety net for Y convention)
+extern idCVar rt_ui_worldGuisMode;   // 1 = WORLD raster (depth-tested vs scene); 0 = old swapchain (no depth)
+extern idCVar rt_ui_worldGuisDepthBias; // pull GUI slightly toward camera to win depth test on coplanar wall
+extern idCVar rt_eye_worldRaster;    // 1 = route eyeball/iris materials through WORLD raster (alpha-tested, depth-tested) instead of ray-traced BLAS
+extern idCVar rt_eye_depthPush;      // Doom-unit camera-ward push for coplanar iris quads (rt_eye_worldRaster only)
 
 // P4 lights / sky / illumination (non-ARCHIVE on purpose)
 extern idCVar rt_light_enable;          // master switch for viewLight -> RgLight upload

@@ -21,6 +21,9 @@ struct rtglFrameStats_t {
     int uiSurfs;             // P-UI: GUI drawSurfs seen in 2D views
     int uiPrims;             // P-UI: swapchained overlay primitives uploaded
     int uiVerts;             // P-UI: overlay vertices uploaded
+    int worldGuiSurfs;       // P-UI: in-world (3D-view) GUI drawSurfs seen
+    int worldGuiPrims;       // P-UI: in-world GUI swapchained primitives uploaded
+    int worldGuiVerts;       // P-UI: in-world GUI vertices uploaded
 
     // P4
     int lightsSeen;          // viewLights on all RC_DRAW_VIEW views
@@ -53,6 +56,9 @@ struct rtglFrameStats_t {
         uiSurfs = 0;
         uiPrims = 0;
         uiVerts = 0;
+        worldGuiSurfs = 0;
+        worldGuiPrims = 0;
+        worldGuiVerts = 0;
         lightsSeen = 0;
         lightsUploaded = 0;
         sphereLights = 0;

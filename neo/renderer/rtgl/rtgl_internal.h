@@ -61,8 +61,11 @@ RgColor4DPacked32  RTGL_DebugColor( int mode, uint64_t objectID, int primIndex,
 // ---------------------------------------------------------------------------
 void         RTGL_MaterialBeginFrame( void );
 void         RTGL_MaterialShutdown( void );
-const char * RTGL_PrimaryTexture( const idMaterial *mat );  // stable name, lazily provided
+const char * RTGL_PrimaryTexture( const idMaterial *mat, const float *shaderRegisters = NULL );  // stable name, lazily provided
 const char * RTGL_GuiTexture( const idMaterial *mat );      // P-UI: GUI/2D texture name, or NULL (= RTGL1 white)
+const char * RTGL_GuiStageTexture( const shaderStage_t *stage, int bakeMode );
+const char * RTGL_ProvideSkyFaceTexture( const char *cubeBaseName, cubeFiles_t cubeType, int side );
+bool         RTGL_IsSkySurface( const idMaterial *mat );
 bool         RTGL_IsDecal( const idMaterial *mat );  // multiply-blend decal detection (by blend bits, not sort)
 void         RTGL_ClassifyMaterial( const idMaterial *mat,
                                     RgMeshPrimitiveFlags *outFlags, float *outEmissive );
@@ -73,6 +76,10 @@ void         RTGL_ClassifyMaterial( const idMaterial *mat,
 void         RTGL_LightBeginFrame( void );                    // reset per-frame light-id registry
 void         RTGL_SubmitLights( const void *cmdHead );       // walk viewLights, rgUploadLight
 void         RTGL_SubmitUI( const void *cmdHead );           // P-UI: 2D GUI views -> swapchained overlay primitives
+void         RTGL_SubmitWorldGuis( const void *cmdHead );    // P-UI: 3D-view SS_GUI quads -> world-space swapchain overlays
+void         RTGL_SkyBeginFrame( void );
+void         RTGL_ObserveSkySurface( const drawSurf_t *surf, float floatTime );
+void         RTGL_SubmitSkyGeometry( void );
 void         RTGL_BuildSkyParams( RgDrawFrameSkyParams *sky );
 void         RTGL_BuildIlluminationParams( RgDrawFrameIlluminationParams *illum );
 

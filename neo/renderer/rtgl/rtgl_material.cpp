@@ -135,10 +135,113 @@ bool RTGL_IsDecal( const idMaterial *mat ) {
     return RTGL_DecalBlendType( mat ) != 0;
 }
 
+bool RTGL_IsSkySurface( const idMaterial *mat ) {
+    if ( !mat ) { return false; }
+    if ( mat->IsPortalSky() || mat->GetSort() == SS_PORTAL_SKY ) { return true; }
+    texgen_t tg = mat->Texgen();
+    return ( tg == TG_SKYBOX_CUBE || tg == TG_WOBBLESKY_CUBE );
+}
+
+// Load and upload one face (side 0..5 = +X, -X, +Y, -Y, +Z, -Z) of a Doom 3
+// cubemap (`cameraCubeMap` CF_CAMERA or `cubeMap` CF_NATIVE) as a 2D clamped
+// RTGL1 texture for Path A rasterized skybox geometry.
+const char * RTGL_ProvideSkyFaceTexture( const char *cubeBaseName, cubeFiles_t cubeType, int side ) {
+    if ( !cubeBaseName || !cubeBaseName[0] || side < 0 || side >= 6 ) { return NULL; }
+    if ( !rg.rgProvideOriginalTexture ) { return NULL; }
+
+    static const char *cameraSides[6] = {
+        "_forward.tga", "_back.tga", "_left.tga", "_right.tga", "_up.tga", "_down.tga"
+    };
+    static const char *axisSides[6] = {
+        "_px.tga", "_nx.tga", "_py.tga", "_ny.tga", "_pz.tga", "_nz.tga"
+    };
+    const char *suffix = ( cubeType == CF_CAMERA ) ? cameraSides[side] : axisSides[side];
+
+    char loadName[ 1024 ];
+    idStr::snPrintf( loadName, sizeof( loadName ), "%s%s", cubeBaseName, suffix );
+
+    const char *provideName = RTGL_DerivedName( loadName, 10 + side );
+    if ( RTGL_WasProvided( provideName ) ) {
+        return provideName;
+    }
+
+    byte *pic = NULL;
+    int width = 0, height = 0;
+    ID_TIME_T timestamp = 0;
+    textureDepth_t depth = TD_DEFAULT;
+    R_LoadImageProgram( loadName, &pic, &width, &height, &timestamp, &depth );
+    if ( !pic || width <= 0 || height <= 0 || timestamp == FILE_NOT_FOUND_TIMESTAMP ) {
+        if ( pic ) { R_StaticFree( pic ); }
+        return NULL;
+    }
+
+    // Apply the exact same camera -> native cubemap orientation transforms as
+    // R_LoadCubeImages (Image_files.cpp:978-1002) so each face matches GL cube
+    // coordinates (+X, -X, +Y, -Y, +Z, -Z).
+    if ( cubeType == CF_CAMERA && width == height ) {
+        switch ( side ) {
+            case 0: // forward (+X)
+                R_RotatePic( pic, width );
+                break;
+            case 1: // back (-X)
+                R_RotatePic( pic, width );
+                R_HorizontalFlip( pic, width, height );
+                R_VerticalFlip( pic, width, height );
+                break;
+            case 2: // left (+Y)
+                R_VerticalFlip( pic, width, height );
+                break;
+            case 3: // right (-Y)
+                R_HorizontalFlip( pic, width, height );
+                break;
+            case 4: // up (+Z)
+                R_RotatePic( pic, width );
+                break;
+            case 5: // down (-Z)
+                R_RotatePic( pic, width );
+                break;
+        }
+    }
+
+    RgOriginalTextureInfo info = {};
+    info.sType = RG_STRUCTURE_TYPE_ORIGINAL_TEXTURE_INFO;
+    info.pNext = NULL;
+    info.pTextureName = provideName;
+    info.pPixels = pic;
+    info.size = RTGL_Ext( (uint32_t)width, (uint32_t)height );
+    info.filter = RG_SAMPLER_FILTER_LINEAR;
+    info.addressModeU = RG_SAMPLER_ADDRESS_MODE_CLAMP;
+    info.addressModeV = RG_SAMPLER_ADDRESS_MODE_CLAMP;
+
+    RgResult r = rg.rgProvideOriginalTexture( &info );
+    R_StaticFree( pic );
+
+    if ( r == RG_RESULT_SUCCESS || r == RG_RESULT_SUCCESS_FOUND_TEXTURE ) {
+        s_provided.Append( idStr( provideName ) );
+        g_rtglStats.texturesProvided++;
+        return provideName;
+    }
+    return NULL;
+}
+
+// Eyeball/iris materials (DFRM_EYEBALL: translucent, blend filter, coplanar
+// with the eyeball mesh) are handled by a dedicated WORLD-raster path, gated
+// by rt_eye_worldRaster. Kept in one predicate so the classifier, the texture
+// bake and the geometry push all agree on the exact same set of surfaces.
+static bool RTGL_IsEyeRasterMaterial( const idMaterial *mat ) {
+    return mat && rt_eye_worldRaster.GetBool() &&
+           mat->Deform() == DFRM_EYEBALL &&
+           RTGL_DecalBlendType( mat ) == 1;
+}
+
 // Gate the bake on rt_decal_mode: modes 1 (alpha-tested cutout) and 3 (DECAL
 // raster overlay) bake; mode 0 (legacy) and 2 (skip; handled in SubmitSurf)
 // do not bake.
 static int RTGL_DecalBakeMode( const idMaterial *mat ) {
+    // Iris path ALWAYS needs the "white = transparent" baked alpha so the
+    // WORLD raster alpha-test can discard the white sclera, independent of
+    // the user's global rt_decal_mode.
+    if ( RTGL_IsEyeRasterMaterial( mat ) ) { return 1; }
     int dm = rt_decal_mode.GetInteger();
     if ( dm != 1 && dm != 3 ) { return 0; }
     return RTGL_DecalBlendType( mat );
@@ -147,7 +250,7 @@ static int RTGL_DecalBakeMode( const idMaterial *mat ) {
 // Load `loadName`'s RGBA, optionally bake a coverage alpha from RGB, and hand
 // it to RTGL1 under `provideName`. Names are cached (s_provided) so each key is
 // uploaded once per session.
-static void RTGL_ProvideTexture( const char *loadName, const char *provideName, int bakeMode, const char *normalLoadName ) {
+static void RTGL_ProvideTexture( const char *loadName, const char *provideName, int bakeMode, const char *normalLoadName, bool clamp = false ) {
     if ( !loadName || !loadName[0] || !provideName || !provideName[0] ) { return; }
     if ( RTGL_WasProvided( provideName ) ) { return; }
     if ( !rg.rgProvideOriginalTexture ) { return; }
@@ -157,12 +260,37 @@ static void RTGL_ProvideTexture( const char *loadName, const char *provideName, 
     ID_TIME_T timestamp = 0;
     textureDepth_t depth = TD_DEFAULT;
 
-    // This is the exact call idImage::ActuallyLoadImage() uses for imgName,
-    // so it handles both plain files and image-program names.
-    R_LoadImageProgram( loadName, &pic, &width, &height, &timestamp, &depth );
+    // Synthesize Doom 3's builtin "_quadratic" falloff image (see R_QuadraticImage
+    // in Image_init.cpp: 32x4 quadratic falloff along X, used by deform flare).
+    if ( idStr::Icmp( loadName, "_quadratic" ) == 0 ) {
+        width = 32;
+        height = 4;
+        pic = (byte *)R_StaticAlloc( width * height * 4 );
+        for ( int x = 0; x < width; x++ ) {
+            float d = idMath::Fabs( (float)x - ( width * 0.5f - 0.5f ) );
+            d = ( d - 0.5f ) / ( width * 0.5f );
+            d = 1.0f - d;
+            d = d * d;
+            int b = (int)( d * 255.0f );
+            if ( b <= 0 ) { b = 0; } else if ( b > 255 ) { b = 255; }
+            for ( int y = 0; y < height; y++ ) {
+                byte *px = pic + ( y * width + x ) * 4;
+                px[0] = px[1] = px[2] = (byte)b;
+                px[3] = 255;
+            }
+        }
+        clamp = true;
+    } else if ( loadName[0] == '_' ) {
+        return; // other procedural internal images (_white, _flat, etc.)
+    } else {
+        // This is the exact call idImage::ActuallyLoadImage() uses for imgName,
+        // so it handles both plain files and image-program names.
+        R_LoadImageProgram( loadName, &pic, &width, &height, &timestamp, &depth );
+    }
 
     if ( !pic || width <= 0 || height <= 0 ) {
         if ( pic ) { R_StaticFree( pic ); }
+        s_provided.Append( idStr( provideName ) );
         return;
     }
 
@@ -218,8 +346,8 @@ static void RTGL_ProvideTexture( const char *loadName, const char *provideName, 
     info.pPixels = pic;
     info.size = RTGL_Ext( (uint32_t)width, (uint32_t)height );
     info.filter = RG_SAMPLER_FILTER_LINEAR;
-    info.addressModeU = RG_SAMPLER_ADDRESS_MODE_REPEAT;
-    info.addressModeV = RG_SAMPLER_ADDRESS_MODE_REPEAT;
+    info.addressModeU = clamp ? RG_SAMPLER_ADDRESS_MODE_CLAMP : RG_SAMPLER_ADDRESS_MODE_REPEAT;
+    info.addressModeV = clamp ? RG_SAMPLER_ADDRESS_MODE_CLAMP : RG_SAMPLER_ADDRESS_MODE_REPEAT;
 
     RgResult r = rg.rgProvideOriginalTexture( &info );
     R_StaticFree( pic );
@@ -236,7 +364,7 @@ static void RTGL_ProvideTexture( const char *loadName, const char *provideName, 
 
 // Pick the primary albedo image for a material and ensure it is provided.
 // Returns a stable pointer or NULL (= albedo white).
-const char * RTGL_PrimaryTexture( const idMaterial *mat ) {
+const char * RTGL_PrimaryTexture( const idMaterial *mat, const float *shaderRegisters ) {
     if ( !mat || mat->GetNumStages() <= 0 ) { return NULL; }
 
     const idImage *chosen = NULL;
@@ -245,6 +373,10 @@ const char * RTGL_PrimaryTexture( const idMaterial *mat ) {
         for ( int i = 0; i < mat->GetNumStages(); i++ ) {
             const shaderStage_t *stage = mat->GetStage( i );
             if ( !stage || !stage->texture.image ) { continue; }
+            if ( shaderRegisters && stage->conditionRegister >= 0 &&
+                 shaderRegisters[ stage->conditionRegister ] == 0.0f ) {
+                continue;
+            }
             bool ok = false;
             if ( pass == 0 )      { ok = ( stage->lighting == SL_DIFFUSE ); }
             else if ( pass == 1 ) { ok = ( stage->lighting == SL_BUMP ); }
@@ -257,35 +389,43 @@ const char * RTGL_PrimaryTexture( const idMaterial *mat ) {
     }
 
     if ( !chosen || chosen->imgName.Length() <= 0 ) { return NULL; }
-
     const char *name = chosen->imgName.c_str();
+    if ( name[0] == '_' && idStr::Icmp( name, "_quadratic" ) != 0 ) { return NULL; }
+
     const char *nrmName = RTGL_NormalMapName( mat );
+    const bool clamp = RTGL_IsEyeRasterMaterial( mat ) || ( chosen->repeat != TR_REPEAT );
     int bake = RTGL_DecalBakeMode( mat );
     if ( bake != 0 ) {
         const char *derived = RTGL_DerivedName( name, bake );
-        RTGL_ProvideTexture( name, derived, bake, nrmName );
+        RTGL_ProvideTexture( name, derived, bake, nrmName, clamp );
         return derived;
     }
-    RTGL_ProvideTexture( name, name, 0, nrmName );
+    RTGL_ProvideTexture( name, name, 0, nrmName, clamp );
     return name;
 }
 
-// P-UI (Plan B): pick and provide the texture for a 2D/GUI material.
-// Returns a stable texture name, or NULL when the material has no 2D image
-// (e.g. the builtin "_white" used for console bars / solid quads). NULL makes
-// RTGL1 sample its 1x1 empty-white texture, so the primitive color alone shows.
-// Unlike RTGL_PrimaryTexture we do NOT bake decal alpha and do NOT attach a
-// normal map: both are meaningless for screen-space UI quads.
+// Provide the 2D texture for a single GUI / HUD shader stage.
+const char * RTGL_GuiStageTexture( const shaderStage_t *stage, int bakeMode ) {
+    if ( !stage || !stage->texture.image ) { return NULL; }
+    const idImage *img = stage->texture.image;
+    if ( img->type != TT_2D || img->imgName.Length() <= 0 ) { return NULL; }
+    const char *name = img->imgName.c_str();
+    if ( name[0] == '_' ) { return NULL; } // _white / _default -> 1x1 white
+    const bool clamp = ( img->repeat != TR_REPEAT );
+    if ( bakeMode != 0 ) {
+        const char *derived = RTGL_DerivedName( name, bakeMode );
+        RTGL_ProvideTexture( name, derived, bakeMode, NULL, clamp );
+        return derived;
+    }
+    RTGL_ProvideTexture( name, name, 0, NULL, clamp );
+    return name;
+}
+
 const char * RTGL_GuiTexture( const idMaterial *mat ) {
     if ( !mat ) { return NULL; }
     for ( int i = 0; i < mat->GetNumStages(); i++ ) {
-        const shaderStage_t *stage = mat->GetStage( i );
-        if ( !stage || !stage->texture.image ) { continue; }
-        const idImage *img = stage->texture.image;
-        if ( img->type != TT_2D || img->imgName.Length() <= 0 ) { continue; }
-        const char *name = img->imgName.c_str();
-        RTGL_ProvideTexture( name, name, 0, NULL );
-        return name;
+        const char *t = RTGL_GuiStageTexture( mat->GetStage( i ), 0 );
+        if ( t ) { return t; }
     }
     return NULL;
 }
@@ -294,6 +434,37 @@ void RTGL_ClassifyMaterial( const idMaterial *mat,
                             RgMeshPrimitiveFlags *outFlags, float *outEmissive ) {
     RgMeshPrimitiveFlags flags = 0;
     float emissive = 0.0f;
+
+    // (2026-11-14 fix) Iris / eyeball surfaces: route through the WORLD
+    // raster channel instead of the ray-traced BLAS. As a coplanar
+    // translucent decal they lose the primary hit to the eyeball/head
+    // geometry and show all-white eyes. WORLD raster gives them:
+    //   TRANSLUCENT  -> IsRasterized() == true (WORLD, not BLAS)
+    //   ALPHA_TESTED -> RsWorld.inl discards the baked-white sclera (a=0)
+    //   NO_SHADOW    -> no shadow casting
+    // The matching baked-alpha texture is forced in RTGL_DecalBakeMode
+    // above, and the coplanar depth push is applied in RTGL_SubmitSurf.
+    if ( RTGL_IsEyeRasterMaterial( mat ) ) {
+        *outFlags = RG_MESH_PRIMITIVE_TRANSLUCENT |
+                    RG_MESH_PRIMITIVE_ALPHA_TESTED |
+                    RG_MESH_PRIMITIVE_NO_SHADOW;
+        *outEmissive = 0.0f;
+        return;
+    }
+
+    // Path A skybox portal brushes (textures/skies/* with TG_SKYBOX_CUBE /
+    // TG_WOBBLESKY_CUBE or portalSky): place them into the ray-traced BLAS as
+    // SKY_VISIBILITY (PV_WORLD_2 -> INSTANCE_CUSTOM_INDEX_FLAG_SKY) and
+    // NO_SHADOW, WITHOUT RG_MESH_PRIMITIVE_TRANSLUCENT. When a primary or
+    // reflection ray hits this brush, doesPayloadContainHitInfo() returns
+    // false -> storeSky() samples the rasterized 6-face skybox cube while
+    // still occluding any geometry behind the sky brush.
+    if ( RTGL_IsSkySurface( mat ) ) {
+        *outFlags = RG_MESH_PRIMITIVE_SKY_VISIBILITY |
+                    RG_MESH_PRIMITIVE_NO_SHADOW;
+        *outEmissive = 0.0f;
+        return;
+    }
 
     if ( mat ) {
         materialCoverage_t cov = mat->Coverage();
@@ -311,17 +482,39 @@ void RTGL_ClassifyMaterial( const idMaterial *mat,
             if ( stage->hasAlphaTest && !( flags & RG_MESH_PRIMITIVE_ALPHA_TESTED ) ) {
                 flags |= RG_MESH_PRIMITIVE_ALPHA_TESTED;
             }
+            int src = stage->drawStateBits & GLS_SRCBLEND_BITS;
             int dst = stage->drawStateBits & GLS_DSTBLEND_BITS;
-            // Only "blend add" (dst=ONE) is genuine emissive glow. "blend filter"
-            // and the inverted-multiply blends are DARKENING overlays, not glow;
-            // treating them as emissive makes their identity texels glow.
-            if ( dst == GLS_DSTBLEND_ONE ) {
-                if ( rt_emissive_enable.GetBool() ) {
-                    emissive = 1.0f * rt_emissive_mult.GetFloat();
+            // Only "blend add" (dst=ONE) is genuine emissive glow / additive blend.
+            // Pure ambient/translucent additive effects (flares, sprites, additive
+            // smoke/beam particles, which have no diffuse/bump interaction stages)
+            // always go through RTGL1's WORLD rasterizer. RTGL1's ToPipelineState()
+            // only selects PipelineStateFlagBits::ADDITIVE (SRC_ALPHA, ONE) when
+            // TRANSLUCENT is set AND emissive > FLT_EPSILON; with emissive == 0 it
+            // falls back to ordinary alpha blend and draws black-background /
+            // alpha=1 flare & smoke textures as opaque blocks. Give pure additive
+            // effects a tiny positive emissive (1e-4f > FLT_EPSILON) so they use
+            // the additive raster pipeline without triggering bloom blowout.
+            if ( dst == GLS_DSTBLEND_ONE && src != GLS_SRCBLEND_ZERO ) {
+                const bool isPureEffect =
+                    ( cov == MC_TRANSLUCENT ) ||
+                    ( mat->Deform() != DFRM_NONE && mat->Deform() != DFRM_EYEBALL ) ||
+                    ( !mat->ReceivesLighting() );
+                if ( isPureEffect ) {
+                    flags |= RG_MESH_PRIMITIVE_TRANSLUCENT;
+                    flags |= RG_MESH_PRIMITIVE_NO_SHADOW;
+                    if ( rt_emissive_enable.GetBool() ) {
+                        emissive = 1.0f * rt_emissive_mult.GetFloat();
+                    } else if ( emissive <= 0.0f ) {
+                        emissive = 1e-4f;
+                    }
                 } else {
-                    emissive = 0.0f;
+                    if ( rt_emissive_enable.GetBool() ) {
+                        emissive = 1.0f * rt_emissive_mult.GetFloat();
+                    } else {
+                        emissive = 0.0f;
+                    }
+                    flags |= RG_MESH_PRIMITIVE_NO_SHADOW;
                 }
-                flags |= RG_MESH_PRIMITIVE_NO_SHADOW;
             }
         }
 

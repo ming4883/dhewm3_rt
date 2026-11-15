@@ -58,6 +58,16 @@ static void R_FinishDeform( drawSurf_t *drawSurf, srfTriangles_t *newTri, idDraw
 		newTri->verts = NULL;
 	}
 
+#ifdef D3_RTGL
+	// RTGL submits geometry from CPU memory (tri->verts) rather than GL VBOs.
+	// Keep a frame-allocated copy of the deformed vertices on newTri->verts
+	// so RTGL_SubmitSurf does not skip deformed surfaces (eyeballs, sprites,
+	// flares, tubes, etc.) as !tri->verts.
+	if ( newTri->numVerts > 0 && ac ) {
+		newTri->verts = (idDrawVert *)R_FrameAlloc( newTri->numVerts * sizeof( idDrawVert ) );
+		memcpy( newTri->verts, ac, newTri->numVerts * sizeof( idDrawVert ) );
+	}
+#endif
 	newTri->ambientCache = vertexCache.AllocFrameTemp( ac, newTri->numVerts * sizeof( idDrawVert ) );
 	// if we are out of vertex cache, leave it the way it is
 	if ( newTri->ambientCache ) {
@@ -919,6 +929,7 @@ static void R_EyeballDeform( drawSurf_t *surf ) {
 	newTri->numIndexes = tri->numIndexes;
 	newTri->indexes = (glIndex_t *)R_FrameAlloc( tri->numIndexes * sizeof( newTri->indexes[0] ) );
 	idDrawVert *ac = (idDrawVert *)_alloca16( tri->numVerts * sizeof( idDrawVert ) );
+	memcpy( ac, tri->verts, tri->numVerts * sizeof( idDrawVert ) );
 
 	newTri->numIndexes = 0;
 

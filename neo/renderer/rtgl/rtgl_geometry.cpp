@@ -103,7 +103,8 @@ static void RTGL_UploadCamera( const viewDef_t *view ) {
     }
 }
 
-static void RTGL_SubmitSurf( const drawSurf_t *surf, int ordinal ) {
+static void RTGL_SubmitSurf( const drawSurf_t *surf, int ordinal,
+                             const idVec3 &camPos ) {
     g_rtglStats.drawSurfsSeen++;
 
     if ( !surf || !surf->geo || !surf->material ) {
@@ -115,6 +116,13 @@ static void RTGL_SubmitSurf( const drawSurf_t *surf, int ordinal ) {
     }
     float sort = surf->material->GetSort();
     if ( sort < 0.0f || sort >= 100.0f ) {  // SS_SUBVIEW/SS_GUI (<0), SS_POST_PROCESS (=100)
+        g_rtglStats.skippedSurfs++; return;
+    }
+    // Carrier surfaces such as textures/common/entityGui have 0 shader stages
+    // (IsDrawn() is true only because entityGui != 0) and sort == SS_MEDIUM.
+    // In the GL backend they execute 0 stage passes; uploading them here with
+    // texName == NULL would draw an opaque white rectangle over the GUI panel.
+    if ( surf->material->GetNumStages() <= 0 ) {
         g_rtglStats.skippedSurfs++; return;
     }
 
@@ -185,6 +193,102 @@ static void RTGL_SubmitSurf( const drawSurf_t *surf, int ordinal ) {
     }
     const float nsign = ( align < 0.0f ) ? -1.0f : 1.0f;
 
+    // (2026-11-14 fix) Coplanar iris quads: when RTGL_ClassifyMaterial
+    // routes an eyeball material to the WORLD raster channel (depth-tested),
+    // nudge each vertex a fraction of a Doom unit toward the camera so the
+    // iris wins LESS_OR_EQUAL against the eyeball mesh it sits on. Vertices
+    // are uploaded in OBJECT space with mesh.transform = modelMatrix (the
+    // proven P2 path), so convert the world-space camera-ward push into
+    // object space via A^T (modelMatrix 3x3 is an orthonormal rotation for
+    // Doom entities). Only active when rt_eye_worldRaster is on.
+    const bool  isEyeRaster = rt_eye_worldRaster.GetBool() &&
+                              surf->material->Deform() == DFRM_EYEBALL;
+    const float eyePush = isEyeRaster ? rt_eye_depthPush.GetFloat() : 0.0f;
+    const float *emm = surf->space ? surf->space->modelMatrix : NULL;
+
+    const float *sregs = surf->shaderRegisters;
+
+    // Locate the primary active stage so we can apply its texture matrix,
+    // conditionRegister, stage color registers, and vertexColor mode (needed
+    // by translucent effects: deform flare, deform sprite, smoke/dust/beam
+    // particles, and DFRM_EYEBALL iris materials).
+    const shaderStage_t *texStage = NULL;
+    bool anyActiveStage = false;
+    for ( int s = 0; s < surf->material->GetNumStages(); s++ ) {
+        const shaderStage_t *st = surf->material->GetStage( s );
+        if ( !st ) { continue; }
+        if ( sregs && st->conditionRegister >= 0 && sregs[ st->conditionRegister ] == 0.0f ) {
+            continue;
+        }
+        anyActiveStage = true;
+    }
+    if ( !anyActiveStage ) {
+        g_rtglStats.skippedSurfs++;
+        return;
+    }
+    for ( int pass = 0; pass < 3 && !texStage; pass++ ) {
+        for ( int s = 0; s < surf->material->GetNumStages(); s++ ) {
+            const shaderStage_t *st = surf->material->GetStage( s );
+            if ( !st || !st->texture.image || st->texture.image->type != TT_2D ) { continue; }
+            if ( sregs && st->conditionRegister >= 0 && sregs[ st->conditionRegister ] == 0.0f ) {
+                continue;
+            }
+            if ( ( pass == 0 && st->lighting == SL_DIFFUSE ) ||
+                 ( pass == 1 && st->lighting == SL_BUMP ) ||
+                 ( pass == 2 ) ) {
+                texStage = st;
+                break;
+            }
+        }
+    }
+    const bool hasTexMat = ( texStage != NULL && texStage->texture.hasMatrix && sregs != NULL );
+
+    // Evaluate stage color & vertexColor mode for pure ambient/translucent
+    // effects (flares, sprites, particles/smoke). Standard lit diffuse/bump
+    // surfaces use interaction lighting and keep neutral white vertex/prim color.
+    const bool isSkySurf = RTGL_IsSkySurface( surf->material );
+    const bool isEffectSurf =
+        !isEyeRaster &&
+        !isSkySurf &&
+        !RTGL_IsDecal( surf->material ) &&
+        ( surf->material->Coverage() == MC_TRANSLUCENT ||
+          ( surf->material->Deform() != DFRM_NONE && surf->material->Deform() != DFRM_EYEBALL ) ||
+          ( !surf->material->ReceivesLighting() ) );
+
+    stageVertexColor_t vcMode = SVC_IGNORE;
+    bool isOneOneAdd = false;
+    RgColor4DPacked32 stageColorPacked = RTGL_White();
+    if ( isEffectSurf && texStage ) {
+        vcMode = texStage->vertexColor;
+        int srcB = texStage->drawStateBits & GLS_SRCBLEND_BITS;
+        int dstB = texStage->drawStateBits & GLS_DSTBLEND_BITS;
+        isOneOneAdd = ( srcB == GLS_SRCBLEND_ONE && dstB == GLS_DSTBLEND_ONE );
+        float cr = 1.0f, cg = 1.0f, cb = 1.0f, ca = 1.0f;
+        if ( sregs ) {
+            cr = sregs[ texStage->color.registers[0] ];
+            cg = sregs[ texStage->color.registers[1] ];
+            cb = sregs[ texStage->color.registers[2] ];
+            ca = sregs[ texStage->color.registers[3] ];
+            if ( cr < 0.0f ) { cr = 0.0f; } else if ( cr > 1.0f ) { cr = 1.0f; }
+            if ( cg < 0.0f ) { cg = 0.0f; } else if ( cg > 1.0f ) { cg = 1.0f; }
+            if ( cb < 0.0f ) { cb = 0.0f; } else if ( cb > 1.0f ) { cb = 1.0f; }
+            if ( ca < 0.0f ) { ca = 0.0f; } else if ( ca > 1.0f ) { ca = 1.0f; }
+        }
+        if ( isOneOneAdd ) {
+            ca = 1.0f; // GL_ONE, GL_ONE ignores source alpha; RTGL1 ADDITIVE is SRC_ALPHA, ONE
+        }
+        // Skip effect stage if its evaluated contribution is completely zero
+        if ( isOneOneAdd && cr <= 0.0f && cg <= 0.0f && cb <= 0.0f ) {
+            g_rtglStats.skippedSurfs++;
+            return;
+        }
+        if ( !isOneOneAdd && ca <= 0.0f ) {
+            g_rtglStats.skippedSurfs++;
+            return;
+        }
+        stageColorPacked = RTGL_PackColorF( cr, cg, cb, ca );
+    }
+
     RgColor4DPacked32 vcolor = RTGL_White();
     for ( int i = 0; i < nv; i++ ) {
         const idDrawVert &src = tri->verts[i];
@@ -192,6 +296,30 @@ static void RTGL_SubmitSurf( const drawSurf_t *surf, int ordinal ) {
         dst.position[0]  = src.xyz.x;
         dst.position[1]  = src.xyz.y;
         dst.position[2]  = src.xyz.z;
+        if ( eyePush > 0.0f ) {
+            float ax = src.xyz.x, ay = src.xyz.y, az = src.xyz.z;
+            float wx = ax, wy = ay, wz = az;
+            if ( emm ) {
+                wx = emm[0]*ax + emm[4]*ay + emm[8]*az  + emm[12];
+                wy = emm[1]*ax + emm[5]*ay + emm[9]*az  + emm[13];
+                wz = emm[2]*ax + emm[6]*ay + emm[10]*az + emm[14];
+            }
+            idVec3 toCam( camPos.x - wx, camPos.y - wy, camPos.z - wz );
+            float dist = toCam.Length();
+            if ( dist > 1e-4f ) {
+                float s = eyePush / dist;
+                float pdx = toCam.x * s, pdy = toCam.y * s, pdz = toCam.z * s;
+                if ( emm ) {
+                    dst.position[0] = ax + (emm[0]*pdx + emm[1]*pdy + emm[2]*pdz);
+                    dst.position[1] = ay + (emm[4]*pdx + emm[5]*pdy + emm[6]*pdz);
+                    dst.position[2] = az + (emm[8]*pdx + emm[9]*pdy + emm[10]*pdz);
+                } else {
+                    dst.position[0] = ax + pdx;
+                    dst.position[1] = ay + pdy;
+                    dst.position[2] = az + pdz;
+                }
+            }
+        }
         // Upload in entity/object space (nsign aligns hemisphere; see above).
         // RTGL1 getTriangle() (VertexData.inl:526-531) transforms decoded normals
         // to world space with the instance matrix (w=0), just like positions --
@@ -199,9 +327,32 @@ static void RTGL_SubmitSurf( const drawSurf_t *surf, int ordinal ) {
         dst.normalPacked = RTGL_PackNormal( nsign * src.normal.x,
                                            nsign * src.normal.y,
                                            nsign * src.normal.z );
-        dst.texCoord[0]  = src.st.x;
-        dst.texCoord[1]  = src.st.y;
-        dst.color        = vcolor;
+        float u = src.st.x;
+        float v = src.st.y;
+        if ( hasTexMat ) {
+            const int (&tm)[2][3] = texStage->texture.matrix;
+            float nu = u * sregs[ tm[0][0] ] + v * sregs[ tm[0][1] ] + sregs[ tm[0][2] ];
+            float nv_uv = u * sregs[ tm[1][0] ] + v * sregs[ tm[1][1] ] + sregs[ tm[1][2] ];
+            u = nu;
+            v = nv_uv;
+        }
+        if ( isEyeRaster ) {
+            if ( u < 0.01f ) { u = 0.01f; } else if ( u > 0.99f ) { u = 0.99f; }
+            if ( v < 0.01f ) { v = 0.01f; } else if ( v > 0.99f ) { v = 0.99f; }
+        }
+        dst.texCoord[0]  = u;
+        dst.texCoord[1]  = v;
+        if ( vcMode == SVC_MODULATE ) {
+            uint8_t va = isOneOneAdd ? 255 : src.color[3];
+            dst.color = RTGL_PackColorB( src.color[0], src.color[1], src.color[2], va );
+        } else if ( vcMode == SVC_INVERSE_MODULATE ) {
+            uint8_t va = isOneOneAdd ? 255 : src.color[3];
+            dst.color = RTGL_PackColorB( (uint8_t)( 255 - src.color[0] ),
+                                         (uint8_t)( 255 - src.color[1] ),
+                                         (uint8_t)( 255 - src.color[2] ), va );
+        } else {
+            dst.color = vcolor;
+        }
         dst._pad0        = 0;
     }
 
@@ -223,13 +374,13 @@ static void RTGL_SubmitSurf( const drawSurf_t *surf, int ordinal ) {
     // normals; omitting FORCE_EXACT_NORMALS selects the interpolated vertex
     // normal in HitInfo.inl:319-322 (RTGL1 transforms them to world space).
     primFlags |= RG_MESH_PRIMITIVE_DONT_GENERATE_NORMALS;
-    const char *texName = RTGL_PrimaryTexture( surf->material );
+    const char *texName = RTGL_PrimaryTexture( surf->material, sregs );
 
     int colorMode = rt_dbg_colorMode.GetInteger();
     RgColor4DPacked32 primColor = ( colorMode != 0 )
         ? RTGL_DebugColor( colorMode, objectID, ordinal, entityIndex,
                            surf->material->GetName(), isStatic )
-        : RTGL_White();
+        : stageColorPacked;
 
     // --- mesh (one per drawSurf) ---
     RgMeshInfo mesh = {};
@@ -297,9 +448,12 @@ void RTGL_ReportStats( void ) {
         g_rtglStats.skippedFog, g_rtglStats.skippedBlend,
         g_rtglStats.skippedNoShadow, g_rtglStats.lightDuplicates,
         g_rtglStats.failedLightUploads );
-    common->Printf( "[RTGL] frame %d | ui surfs=%d prims=%d verts=%d\n",
+    common->Printf( "[RTGL] frame %d | ui surfs=%d prims=%d verts=%d | "
+        "worldGui(mode=%d) surfs=%d prims=%d verts=%d\n",
         g_rtglFrameIndex, g_rtglStats.uiSurfs, g_rtglStats.uiPrims,
-        g_rtglStats.uiVerts );
+        g_rtglStats.uiVerts, rt_ui_worldGuisMode.GetInteger(),
+        g_rtglStats.worldGuiSurfs, g_rtglStats.worldGuiPrims,
+        g_rtglStats.worldGuiVerts );
 }
 
 void RTGL_SubmitCommands( const void *cmdHead ) {
@@ -347,7 +501,11 @@ void RTGL_SubmitCommands( const void *cmdHead ) {
         }
         for ( int i = 0; i < v->numDrawSurfs; i++ ) {
             if ( budget > 0 && g_rtglStats.primitives >= budget ) { break; }
-            RTGL_SubmitSurf( v->drawSurfs[i], ordinal++ );
+            const drawSurf_t *ds = v->drawSurfs[i];
+            if ( ds && ds->material && RTGL_IsSkySurface( ds->material ) ) {
+                RTGL_ObserveSkySurface( ds, v->floatTime );
+            }
+            RTGL_SubmitSurf( ds, ordinal++, v->renderView.vieworg );
         }
     }
 

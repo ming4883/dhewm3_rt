@@ -74,6 +74,18 @@ idCVar rt_ui_enable(           "rt_ui_enable",           "1", CVAR_RENDERER | CV
                                 "1 = compose in-game 2D GUI (console/menu/HUD) via RTGL1 swapchain overlays (Plan B UI); 0 = off" );
 idCVar rt_ui_flipY(            "rt_ui_flipY",            "0", CVAR_RENDERER | CVAR_BOOL,
                                 "1 = vertically flip the in-game 2D overlay (set if the console/HUD appears upside down)" );
+idCVar rt_ui_worldGuis(        "rt_ui_worldGuis",        "1", CVAR_RENDERER | CVAR_BOOL,
+                                "1 = draw in-world interactive GUI surfaces (terminals/keypads/screens); 0 = off" );
+idCVar rt_ui_worldGuisFlipY(   "rt_ui_worldGuisFlipY",   "0", CVAR_RENDERER | CVAR_BOOL,
+                                "1 = vertically flip the in-world GUI overlay (swapchain mode only)" );
+idCVar rt_ui_worldGuisMode(    "rt_ui_worldGuisMode",    "1", CVAR_RENDERER | CVAR_INTEGER,
+                                "1 = WORLD raster channel (depth-tested against the ray-traced scene, DEFAULT); 0 = old swapchain overlay (draws on top, no depth)" );
+idCVar rt_ui_worldGuisDepthBias("rt_ui_worldGuisDepthBias","0.002", CVAR_RENDERER | CVAR_FLOAT,
+                                "fraction of the view ray to pull in-world GUI toward the camera so it wins the depth test on a coplanar wall (0 = off)" );
+idCVar rt_eye_worldRaster(      "rt_eye_worldRaster",      "1", CVAR_RENDERER | CVAR_BOOL,
+                                "1 = draw eyeball/iris (DFRM_EYEBALL) materials via WORLD raster (alpha-tested, depth-tested); 0 = legacy ray-traced BLAS (iris invisible)" );
+idCVar rt_eye_depthPush(        "rt_eye_depthPush",        "0.2", CVAR_RENDERER | CVAR_FLOAT,
+                                "Doom units to push coplanar iris quads toward the camera so they win the depth test (rt_eye_worldRaster only)" );
 
 // P4 lights / sky / illumination (non-ARCHIVE on purpose)
 // Calibration defaults (2026-11-12): RTGL1 treats sphere/spot intensity as
@@ -95,17 +107,17 @@ idCVar rt_ui_flipY(            "rt_ui_flipY",            "0", CVAR_RENDERER | CV
 // Kept as an OFF-by-default experiment knob.
 idCVar rt_light_enable(        "rt_light_enable",        "1", CVAR_RENDERER | CVAR_BOOL,
                                "upload viewLights as RTGL1 RgLight (0 = lights off)" );
-idCVar rt_light_intensity(     "rt_light_intensity",     "20000", CVAR_RENDERER | CVAR_FLOAT,
+idCVar rt_light_intensity(     "rt_light_intensity",     "2000", CVAR_RENDERER | CVAR_FLOAT,
                                "base scale on imported sphere/spot light intensity; multiplied by (extent/refRadius)^sizeExponent" );
-idCVar rt_light_sizeExponent(  "rt_light_sizeExponent",  "0", CVAR_RENDERER | CVAR_FLOAT,
-                               "OFF by default. If >0, intensity *= (extent/refRadius)^exponent. WARNING: with refRadius=256 most lamps shrink and the scene goes DARK, because RTGL1 irradiance ~ intensity/d^2 is radius-independent. 0 = flat legacy (all lights equal energy, scene lit)" );
-idCVar rt_light_refRadius(     "rt_light_refRadius",     "256", CVAR_RENDERER | CVAR_FLOAT,
-                               "extent (Doom units) that maps to the unscaled base intensity" );
+idCVar rt_light_sizeExponent(  "rt_light_sizeExponent",  "1.8", CVAR_RENDERER | CVAR_FLOAT,
+                               "scales intensity by (extent/refRadius)^exponent so larger Doom light volumes reach proportionally farther under RTGL1 1/d^2 falloff" );
+idCVar rt_light_refRadius(     "rt_light_refRadius",     "70", CVAR_RENDERER | CVAR_FLOAT,
+                               "extent (Doom units) that maps to the unscaled base intensity (anchored at small fixture lamps ~70 units)" );
 idCVar rt_light_dirIntensity(   "rt_light_dirIntensity",   "2", CVAR_RENDERER | CVAR_FLOAT,
                                 "illuminance (lux) for imported parallel/directional lights; sharing rt_light_intensity flooded the whole scene" );
 idCVar rt_light_skipParallel(   "rt_light_skipParallel",   "0", CVAR_RENDERER | CVAR_BOOL,
                                 "0 = import p.parallel lights as directional (2026-11-14 restored); 1 = skip them (RTGL1 directional = ONE unbounded GLOBAL sun, but Doom3 parallel lights are bounded/frustum-culled, so importing them can pop the whole scene bright/dark on a ~5 deg camera rotation, mars_city1 start). Use rt_sun_enable for a view-independent global sun" );
-idCVar rt_light_radiusScale(   "rt_light_radiusScale",   "0.02", CVAR_RENDERER | CVAR_FLOAT,
+idCVar rt_light_radiusScale(   "rt_light_radiusScale",   "0.05", CVAR_RENDERER | CVAR_FLOAT,
                                "scale on spherical/spot light radius (raw Doom units)" );
 idCVar rt_light_maxLights(     "rt_light_maxLights",     "0", CVAR_RENDERER | CVAR_INTEGER,
                                "per-frame light budget cap (<4096), 0 = unlimited" );
@@ -375,8 +387,10 @@ void RTGL_Shutdown( void ) {
 void RTGL_SubmitFrameCommands( const void *commandChainHead ) {
     if ( !rgActive || !rgFrameStarted ) return;
     RTGL_SubmitCommands( commandChainHead );   // P2/P3: camera + geometry + textures
+    RTGL_SubmitSkyGeometry();                  // P4 Path A: 6-face rasterized skybox cube
     RTGL_SubmitLights( commandChainHead );     // P4: viewLights -> RgLight
     RTGL_SubmitUI( commandChainHead );         // P-UI: 2D GUI/console/HUD swapchain overlays
+    RTGL_SubmitWorldGuis( commandChainHead );  // P-UI: in-world interactive GUI surfaces (3D-view SS_GUI quads)
     RTGL_ReportStats();                        // after all, so all counters are final
 }
 
@@ -391,6 +405,7 @@ void RTGL_BeginFrame( int windowWidth, int windowHeight ) {
     RTGL_SubmitBeginFrame();
     RTGL_MaterialBeginFrame();
     RTGL_LightBeginFrame();
+    RTGL_SkyBeginFrame();
 
     RgStartFrameRenderResolutionParams res = {};
     res.sType = RG_STRUCTURE_TYPE_START_FRAME_RENDER_RESOLUTION_PARAMS;
