@@ -108,14 +108,22 @@ static const char * RTGL_NormalMapName( const idMaterial *mat ) {
     return img->imgName.c_str();
 }
 
-// Classify a material by its BLEND drawStateBits. Returns the "bake mode":
-//   0 = not a multiply-blend decal (no alpha bake)
-//   1 = multiply / filter          (WHITE = transparent)
-//   2 = inverted multiply          (BLACK = transparent)
-// Detection is by blend bits, NOT by sort==SS_DECAL, because many decals use
-// "sort 1" (a numeric sort) and would be missed by SS_DECAL alone.
+// Classify a material by its BLEND drawStateBits / translucent-diffuse decal
+// pattern. Returns the decal blend type:
+//   0 = not a decal
+//   1 = multiply / filter          (WHITE = transparent, darkens background)
+//   2 = inverted multiply          (BLACK = transparent, darkens background)
+//   4 = translucent diffusemap     (BLACK = transparent, ADDITIVE light-interaction
+//                                   in original Doom 3: sentry_spot, floor_stripe,
+//                                   alphabet4, military_logo, mixom1, marsec, etc.)
+// Detection is by blend/stage properties, NOT by sort==SS_DECAL alone, because
+// many decals use "sort 1" or default translucent sort (SS_MEDIUM).
 static int RTGL_DecalBlendType( const idMaterial *mat ) {
     if ( !mat ) { return 0; }
+    bool hasDiffuse = false;
+    bool hasBump = false;
+    bool hasAlphaTest = false;
+    bool hasCubemap = false;
     for ( int i = 0; i < mat->GetNumStages(); i++ ) {
         const shaderStage_t *stage = mat->GetStage( i );
         if ( !stage ) { continue; }
@@ -127,6 +135,29 @@ static int RTGL_DecalBlendType( const idMaterial *mat ) {
         if ( src == GLS_SRCBLEND_ZERO && dst == GLS_DSTBLEND_ONE_MINUS_SRC_COLOR ) {
             return 2;   // gl_zero,gl_one_minus_src_color
         }
+        if ( stage->lighting == SL_DIFFUSE ) { hasDiffuse = true; }
+        // Ignore the implicit `map _flat` bump stage automatically synthesized
+        // by idMaterial::AddImplicitStages() (Material.cpp:1721) for every
+        // diffuse-only material; only treat explicit non-procedural normal maps
+        // as `hasBump`.
+        if ( stage->lighting == SL_BUMP && stage->texture.image &&
+             stage->texture.image->imgName.Length() > 0 &&
+             stage->texture.image->imgName[0] != '_' ) {
+            hasBump = true;
+        }
+        if ( stage->hasAlphaTest )           { hasAlphaTest = true; }
+        if ( stage->texture.image && stage->texture.image->type == TT_CUBIC ) {
+            hasCubemap = true;
+        }
+    }
+    // In Doom 3's ARB2 backend, a `translucent` material with `blend diffusemap`
+    // skips RB_T_FillDepthBuffer (never writes black) and is drawn in
+    // vLight->translucentInteractions with additive `GL_ONE, GL_ONE` blending,
+    // so black (0,0,0) in its 24-bit TGA is 100% transparent.
+    if ( mat->Coverage() == MC_TRANSLUCENT && hasDiffuse &&
+         !hasBump && !hasAlphaTest && !hasCubemap &&
+         mat->GetSurfaceType() != SURFTYPE_GLASS ) {
+        return 4;
     }
     return 0;
 }
@@ -234,17 +265,25 @@ static bool RTGL_IsEyeRasterMaterial( const idMaterial *mat ) {
            RTGL_DecalBlendType( mat ) == 1;
 }
 
-// Gate the bake on rt_decal_mode: modes 1 (alpha-tested cutout) and 3 (DECAL
-// raster overlay) bake; mode 0 (legacy) and 2 (skip; handled in SubmitSurf)
-// do not bake.
+// Gate the bake on rt_decal_mode:
+//   bakeMode 1 = white-transparent, preserve RGB (eyeball iris alpha-cutout)
+//   bakeMode 2 = black-transparent, invert RGB + alpha = maxRGB (splat decals)
+//   bakeMode 3 = white-transparent, unmix white background from RGB (Solution 1:
+//                WORLD-raster darkened alpha for multiply/filter decals & hair)
+//   bakeMode 4 = black-transparent, preserve RGB + alpha = maxRGB (translucent
+//                diffusemap decals: sentry_spot, floor_stripe, alphabet4, etc.)
 static int RTGL_DecalBakeMode( const idMaterial *mat ) {
-    // Iris path ALWAYS needs the "white = transparent" baked alpha so the
-    // WORLD raster alpha-test can discard the white sclera, independent of
-    // the user's global rt_decal_mode.
-    if ( RTGL_IsEyeRasterMaterial( mat ) ) { return 1; }
+    // Iris (`DFRM_EYEBALL` + `blend filter`) uses Solution 1's bakeMode 3 just
+    // like other `blend filter` overlays: unmixing the white sclera component
+    // `mn = min(R,G,B)` sets `alpha = 255 - mn` and `rgb = rgb - mn`, so WORLD
+    // alpha-blending `src_rgb * a + dst * (1 - a)` reproduces `dst * (tex/255)`
+    // across pupil, mid-iris, limbal ring, and sclera without any alpha-test hole.
+    if ( RTGL_IsEyeRasterMaterial( mat ) ) { return 3; }
     int dm = rt_decal_mode.GetInteger();
     if ( dm != 1 && dm != 3 ) { return 0; }
-    return RTGL_DecalBlendType( mat );
+    int bt = RTGL_DecalBlendType( mat );
+    if ( bt == 1 ) { return 3; } // unmix white background so edges never halo white
+    return bt;
 }
 
 // Load `loadName`'s RGBA, optionally bake a coverage alpha from RGB, and hand
@@ -260,23 +299,36 @@ static void RTGL_ProvideTexture( const char *loadName, const char *provideName, 
     ID_TIME_T timestamp = 0;
     textureDepth_t depth = TD_DEFAULT;
 
-    // Synthesize Doom 3's builtin "_quadratic" falloff image (see R_QuadraticImage
-    // in Image_init.cpp: 32x4 quadratic falloff along X, used by deform flare).
+    // Synthesize Doom 3's builtin "_quadratic" falloff image (used by `deform flare`).
+    // R_FlareDeform assigns outer ring UVs along all 4 edges: (0,0.5), (1,0.5),
+    // (0.5,0), and (0.5,1). Original GL relied on GL_CLAMP_TO_BORDER (black=0)
+    // to fade the top/bottom edges of its 32x4 texture, whereas RTGL1's CLAMP uses
+    // VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE. Build a 32x32 2D quadratic falloff
+    // with an explicit 0 border on all 4 sides so every outer flare vertex fades
+    // smoothly to 0 under CLAMP_TO_EDGE.
     if ( idStr::Icmp( loadName, "_quadratic" ) == 0 ) {
         width = 32;
-        height = 4;
+        height = 32;
         pic = (byte *)R_StaticAlloc( width * height * 4 );
-        for ( int x = 0; x < width; x++ ) {
-            float d = idMath::Fabs( (float)x - ( width * 0.5f - 0.5f ) );
-            d = ( d - 0.5f ) / ( width * 0.5f );
-            d = 1.0f - d;
-            d = d * d;
-            int b = (int)( d * 255.0f );
-            if ( b <= 0 ) { b = 0; } else if ( b > 255 ) { b = 255; }
-            for ( int y = 0; y < height; y++ ) {
+        for ( int y = 0; y < height; y++ ) {
+            float dy = idMath::Fabs( (float)y - ( height * 0.5f - 0.5f ) );
+            dy = ( dy - 0.5f ) / ( height * 0.5f - 1.0f );
+            if ( dy < 0.0f ) { dy = 0.0f; } else if ( dy > 1.0f ) { dy = 1.0f; }
+            float fy = ( 1.0f - dy ) * ( 1.0f - dy );
+            for ( int x = 0; x < width; x++ ) {
+                float dx = idMath::Fabs( (float)x - ( width * 0.5f - 0.5f ) );
+                dx = ( dx - 0.5f ) / ( width * 0.5f - 1.0f );
+                if ( dx < 0.0f ) { dx = 0.0f; } else if ( dx > 1.0f ) { dx = 1.0f; }
+                float fx = ( 1.0f - dx ) * ( 1.0f - dx );
+                int b = (int)( fx * fy * 255.0f + 0.5f );
+                if ( x == 0 || x == width - 1 || y == 0 || y == height - 1 || b < 0 ) {
+                    b = 0;
+                } else if ( b > 255 ) {
+                    b = 255;
+                }
                 byte *px = pic + ( y * width + x ) * 4;
                 px[0] = px[1] = px[2] = (byte)b;
-                px[3] = 255;
+                px[3] = (byte)b;
             }
         }
         clamp = true;
@@ -301,16 +353,50 @@ static void RTGL_ProvideTexture( const char *loadName, const char *provideName, 
             int mx = p[0];
             if ( p[1] > mx ) { mx = p[1]; }
             if ( p[2] > mx ) { mx = p[2]; }
+            int mn = p[0];
+            if ( p[1] < mn ) { mn = p[1]; }
+            if ( p[2] < mn ) { mn = p[2]; }
             if ( bakeMode == 1 ) {
-                // white = transparent: coverage = darkness
+                // Eye iris cutout: white = transparent, preserve iris RGB
                 p[3] = (byte)( 255 - mx );
+            } else if ( bakeMode == 3 ) {
+                // Solution 1 (multiply / blend filter decals, hair & lenses):
+                // In Doom 3, `blend filter` computes dst = dst * src_rgb, where
+                // white (255,255,255) is identity (transparent) and grey/brown
+                // edges (e.g. 175) darken the background by ~30%. Converting
+                // this to standard alpha blend `src_rgb * a + dst * (1 - a)`
+                // requires unmixing the white background component `mn` from
+                // `src_rgb`; otherwise `src_rgb` (~130..230) paints bright grey/
+                // white blotches over dark floors and white fringes around hair.
+                // For 32-bit TGAs that also author an alpha mask (e.g. scientist
+                // glasses2_fx.tga, zsgogs2.tga where empty frame border has
+                // RGB=255, A=0), modulate by original alpha p[3] as well.
+                int cov = ( ( 255 - mn ) * (int)p[3] + 127 ) / 255;
+                p[3] = (byte)cov;
+                p[0] = (byte)( p[0] - mn );
+                p[1] = (byte)( p[1] - mn );
+                p[2] = (byte)( p[2] - mn );
+            } else if ( bakeMode == 4 ) {
+                // Translucent diffusemap decals (sentry_spot, floor_stripe,
+                // alphabet4, alphabet6, military_logo, corp_logo1, uacosticker,
+                // mixom1, arrow1, marsec): 24-bit RGB on a pure black background
+                // where black is transparent, but the surviving painted mark IS
+                // a lit `diffusemap` surface (receives path-traced lighting and
+                // shadows in the ray-traced BLAS via RtAlphaTest.rahit).
+                // Keep original diffuse RGB untouched so gray/orange/yellow paint
+                // isn't blown out to unlit white, and bake a sharp cutout alpha
+                // so RtAlphaTest discards the black background (mx < ~22).
+                int cov = mx * 6;
+                if ( cov > 255 ) { cov = 255; }
+                cov = ( cov * (int)p[3] + 127 ) / 255;
+                p[3] = (byte)cov;
             } else {
-                // black = transparent: coverage = brightness; also darken the
-                // surviving mark (both multiply blends darken the destination)
+                // black = transparent (gl_zero, gl_one_minus_src_color):
+                // coverage = brightness; unmix black and darken surviving mark
                 p[3] = (byte)mx;
-                p[0] = (byte)( 255 - p[0] );
-                p[1] = (byte)( 255 - p[1] );
-                p[2] = (byte)( 255 - p[2] );
+                p[0] = (byte)( mx - p[0] );
+                p[1] = (byte)( mx - p[1] );
+                p[2] = (byte)( mx - p[2] );
             }
         }
     }
@@ -368,19 +454,26 @@ const char * RTGL_PrimaryTexture( const idMaterial *mat, const float *shaderRegi
     if ( !mat || mat->GetNumStages() <= 0 ) { return NULL; }
 
     const idImage *chosen = NULL;
-    // Prefer a diffuse stage, then bump, then any stage carrying an image.
+    // Prefer SL_DIFFUSE, then SL_AMBIENT (excluding maskcolor stages), then
+    // SL_SPECULAR. NEVER pick SL_BUMP as the primary albedo texture: tangent-
+    // space normal maps (e.g. security/gog_local.tga, zsgogs2_local.tga,
+    // hazmat/visor_local.tga) encode XYZ normals in RGB and paint goggles/visors
+    // bright blue/purple/green if bound to the albedo slot.
+    const int maskColorBits = ( GLS_REDMASK | GLS_GREENMASK | GLS_BLUEMASK );
     for ( int pass = 0; pass < 3 && !chosen; pass++ ) {
         for ( int i = 0; i < mat->GetNumStages(); i++ ) {
             const shaderStage_t *stage = mat->GetStage( i );
             if ( !stage || !stage->texture.image ) { continue; }
+            if ( stage->lighting == SL_BUMP ) { continue; }
+            if ( ( stage->drawStateBits & maskColorBits ) == maskColorBits ) { continue; }
             if ( shaderRegisters && stage->conditionRegister >= 0 &&
                  shaderRegisters[ stage->conditionRegister ] == 0.0f ) {
                 continue;
             }
             bool ok = false;
             if ( pass == 0 )      { ok = ( stage->lighting == SL_DIFFUSE ); }
-            else if ( pass == 1 ) { ok = ( stage->lighting == SL_BUMP ); }
-            else                  { ok = true; }
+            else if ( pass == 1 ) { ok = ( stage->lighting == SL_AMBIENT ); }
+            else                  { ok = ( stage->lighting == SL_SPECULAR ); }
             if ( ok && stage->texture.image->type == TT_2D ) {
                 chosen = stage->texture.image;
                 break;
@@ -445,8 +538,15 @@ void RTGL_ClassifyMaterial( const idMaterial *mat,
     // The matching baked-alpha texture is forced in RTGL_DecalBakeMode
     // above, and the coplanar depth push is applied in RTGL_SubmitSurf.
     if ( RTGL_IsEyeRasterMaterial( mat ) ) {
+        // Do NOT set RG_MESH_PRIMITIVE_ALPHA_TESTED here: in Doom 3's eye
+        // textures (bet.tga, green.tga, brown.tga, blue.tga), the mid-iris body
+        // has RGB ~ 142..184 (alpha = 255 - RGB = 71..113 < 128), while the
+        // pupil (RGB ~ 0, a = 254) and outer limbal ring (RGB ~ 98..112, a = 143)
+        // have alpha >= 128. Enabling ALPHA_TESTED (threshold 0.5) discards the
+        // entire mid-iris and exposes a bright white ring of sclera between the
+        // pupil and outer limbal ring. Pure TRANSLUCENT with bakeMode 3 smoothly
+        // modulates the lit eyeball underneath across the full iris.
         *outFlags = RG_MESH_PRIMITIVE_TRANSLUCENT |
-                    RG_MESH_PRIMITIVE_ALPHA_TESTED |
                     RG_MESH_PRIMITIVE_NO_SHADOW;
         *outEmissive = 0.0f;
         return;
@@ -494,7 +594,16 @@ void RTGL_ClassifyMaterial( const idMaterial *mat,
             // alpha=1 flare & smoke textures as opaque blocks. Give pure additive
             // effects a tiny positive emissive (1e-4f > FLT_EPSILON) so they use
             // the additive raster pipeline without triggering bloom blowout.
-            if ( dst == GLS_DSTBLEND_ONE && src != GLS_SRCBLEND_ZERO ) {
+            // Ignore non-2D cubemap reflection stages (e.g. `env/bland` on
+            // security/gog, hazmat/visor) and alpha-tested cutouts (`security/gog`
+            // stage 0 has `blend add` + `alphaTest 0.5` for the dark goggle frame)
+            // when deciding whether to force the WORLD raster ADDITIVE pipeline:
+            // RTGL1's ToPipelineState() gives ADDITIVE precedence over ALPHA_TESTED,
+            // which would skip alphaTest discard in RsWorld.inl.
+            const bool is2DStage = ( stage->texture.image != NULL &&
+                                     stage->texture.image->type == TT_2D );
+            if ( is2DStage && dst == GLS_DSTBLEND_ONE && src != GLS_SRCBLEND_ZERO &&
+                 !stage->hasAlphaTest && !( flags & RG_MESH_PRIMITIVE_ALPHA_TESTED ) ) {
                 const bool isPureEffect =
                     ( cov == MC_TRANSLUCENT ) ||
                     ( mat->Deform() != DFRM_NONE && mat->Deform() != DFRM_EYEBALL ) ||
@@ -523,20 +632,40 @@ void RTGL_ClassifyMaterial( const idMaterial *mat,
         }
     }
 
-    // Decal overlays: the baked coverage alpha (see RTGL_ProvideTexture) lets
-    // RTGL1's any-hit shader discard the transparent texels. RTGL_IsDecal is
-    // blend-based, so it also catches "sort 1" decals (scorch / schmutz).
+    // Decal overlays (Solution 1): route multiply-blend decals (skid, stain,
+    // scorch, blood splat, scientist/zombie hair cards) to the WORLD raster
+    // channel (RG_MESH_PRIMITIVE_TRANSLUCENT | RG_MESH_PRIMITIVE_NO_SHADOW,
+    // WITHOUT ALPHA_TESTED). This keeps them out of the ray-traced BLAS so:
+    //   1) Primary rays hit the underlying floor/wall geometry and preserve its
+    //      tangent-space normal map, path-traced lighting, and specular;
+    //   2) The unmixed dark-alpha texture (bakeMode 3 / 2) smoothly darkens the
+    //      lit floor and eliminates white/grey fringes on decals and hair.
     if ( RTGL_IsDecal( mat ) ) {
         int dm = rt_decal_mode.GetInteger();
+        int bt = RTGL_DecalBlendType( mat );
         if ( dm != 0 ) {
-            emissive = 0.0f;                        // darkening overlays never glow
+            emissive = 0.0f;                        // decals never glow
             flags |= RG_MESH_PRIMITIVE_NO_SHADOW;
-            if ( dm == 1 ) {
-                flags &= ~RG_MESH_PRIMITIVE_TRANSLUCENT;  // cutout, not refraction
+            if ( bt == 4 ) {
+                // Lit diffusemap decals (uacosticker, corp_logo1, military_logo,
+                // alphabet4/6, sentry_spot, floor_stripe): route to the ray-traced
+                // BLAS as ALPHA_TESTED cutouts (NOT TRANSLUCENT). In WORLD raster
+                // they would be drawn unlit (`outColor = tex * color`); in the BLAS
+                // RtAlphaTest.rahit discards their black background while survivors
+                // receive full path-traced direct/indirect lighting and shadows.
+                flags &= ~RG_MESH_PRIMITIVE_TRANSLUCENT;
                 flags |= RG_MESH_PRIMITIVE_ALPHA_TESTED;
-            } else if ( dm == 3 ) {
-                flags |= RG_MESH_PRIMITIVE_DECAL;
-                flags |= RG_MESH_PRIMITIVE_TRANSLUCENT;
+            } else {
+                // Multiply darkening decals (bt == 1 or 2: skid, stain, scorch,
+                // blood splat, hair cards): route to WORLD raster alpha blend so
+                // they darken the already-lit floor without replacing its normal map.
+                flags &= ~RG_MESH_PRIMITIVE_ALPHA_TESTED;
+                if ( dm == 1 ) {
+                    flags |= RG_MESH_PRIMITIVE_TRANSLUCENT;
+                } else if ( dm == 3 ) {
+                    flags |= RG_MESH_PRIMITIVE_DECAL;
+                    flags |= RG_MESH_PRIMITIVE_TRANSLUCENT;
+                }
             }
         }
     }

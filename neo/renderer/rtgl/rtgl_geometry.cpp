@@ -203,7 +203,15 @@ static void RTGL_SubmitSurf( const drawSurf_t *surf, int ordinal,
     // Doom entities). Only active when rt_eye_worldRaster is on.
     const bool  isEyeRaster = rt_eye_worldRaster.GetBool() &&
                               surf->material->Deform() == DFRM_EYEBALL;
-    const float eyePush = isEyeRaster ? rt_eye_depthPush.GetFloat() : 0.0f;
+    const bool  isLitDecalCutout = !isEyeRaster &&
+                                   RTGL_IsDecal( surf->material ) &&
+                                   surf->material->ReceivesLighting();
+    const bool  isDecalRaster = !isEyeRaster &&
+                                !isLitDecalCutout &&
+                                ( rt_decal_mode.GetInteger() == 1 ) &&
+                                RTGL_IsDecal( surf->material );
+    const float eyePush = isEyeRaster ? rt_eye_depthPush.GetFloat()
+                        : ( isDecalRaster ? 0.15f : ( isLitDecalCutout ? 0.05f : 0.0f ) );
     const float *emm = surf->space ? surf->space->modelMatrix : NULL;
 
     const float *sregs = surf->shaderRegisters;
@@ -226,16 +234,19 @@ static void RTGL_SubmitSurf( const drawSurf_t *surf, int ordinal,
         g_rtglStats.skippedSurfs++;
         return;
     }
+    const int maskColorBits = ( GLS_REDMASK | GLS_GREENMASK | GLS_BLUEMASK );
     for ( int pass = 0; pass < 3 && !texStage; pass++ ) {
         for ( int s = 0; s < surf->material->GetNumStages(); s++ ) {
             const shaderStage_t *st = surf->material->GetStage( s );
             if ( !st || !st->texture.image || st->texture.image->type != TT_2D ) { continue; }
+            if ( st->lighting == SL_BUMP ) { continue; }
+            if ( ( st->drawStateBits & maskColorBits ) == maskColorBits ) { continue; }
             if ( sregs && st->conditionRegister >= 0 && sregs[ st->conditionRegister ] == 0.0f ) {
                 continue;
             }
             if ( ( pass == 0 && st->lighting == SL_DIFFUSE ) ||
-                 ( pass == 1 && st->lighting == SL_BUMP ) ||
-                 ( pass == 2 ) ) {
+                 ( pass == 1 && st->lighting == SL_AMBIENT ) ||
+                 ( pass == 2 && st->lighting == SL_SPECULAR ) ) {
                 texStage = st;
                 break;
             }
@@ -250,8 +261,9 @@ static void RTGL_SubmitSurf( const drawSurf_t *surf, int ordinal,
     const bool isEffectSurf =
         !isEyeRaster &&
         !isSkySurf &&
-        !RTGL_IsDecal( surf->material ) &&
-        ( surf->material->Coverage() == MC_TRANSLUCENT ||
+        ( isDecalRaster ||
+          isLitDecalCutout ||
+          surf->material->Coverage() == MC_TRANSLUCENT ||
           ( surf->material->Deform() != DFRM_NONE && surf->material->Deform() != DFRM_EYEBALL ) ||
           ( !surf->material->ReceivesLighting() ) );
 
@@ -262,7 +274,8 @@ static void RTGL_SubmitSurf( const drawSurf_t *surf, int ordinal,
         vcMode = texStage->vertexColor;
         int srcB = texStage->drawStateBits & GLS_SRCBLEND_BITS;
         int dstB = texStage->drawStateBits & GLS_DSTBLEND_BITS;
-        isOneOneAdd = ( srcB == GLS_SRCBLEND_ONE && dstB == GLS_DSTBLEND_ONE );
+        isOneOneAdd = ( srcB == GLS_SRCBLEND_ONE && dstB == GLS_DSTBLEND_ONE &&
+                        !texStage->hasAlphaTest );
         float cr = 1.0f, cg = 1.0f, cb = 1.0f, ca = 1.0f;
         if ( sregs ) {
             cr = sregs[ texStage->color.registers[0] ];
@@ -274,15 +287,26 @@ static void RTGL_SubmitSurf( const drawSurf_t *surf, int ordinal,
             if ( cb < 0.0f ) { cb = 0.0f; } else if ( cb > 1.0f ) { cb = 1.0f; }
             if ( ca < 0.0f ) { ca = 0.0f; } else if ( ca > 1.0f ) { ca = 1.0f; }
         }
-        if ( isOneOneAdd ) {
-            ca = 1.0f; // GL_ONE, GL_ONE ignores source alpha; RTGL1 ADDITIVE is SRC_ALPHA, ONE
+        if ( isOneOneAdd || isLitDecalCutout ) {
+            ca = 1.0f; // Keep alpha=1.0 so RtAlphaTest.rahit uses baked texel alpha
+        }
+        // Scale light flare / glare additive surfaces by rt_flare_opacity so
+        // RTGL1's post-raster auto-exposure does not blow them out into opaque
+        // white polygons. RTGL1's ADDITIVE pipeline blends as SRC_ALPHA, ONE,
+        // so scaling `ca` directly controls the additive opacity.
+        const bool isFlareSurf =
+            ( surf->material->Deform() == DFRM_FLARE ) ||
+            ( texStage->texture.image &&
+              idStr::Icmp( texStage->texture.image->imgName.c_str(), "_quadratic" ) == 0 ) ||
+            ( idStr::FindText( surf->material->GetName(), "flare", false ) >= 0 );
+        if ( isFlareSurf ) {
+            float flareOp = rt_flare_opacity.GetFloat();
+            if ( flareOp < 0.0f ) { flareOp = 0.0f; } else if ( flareOp > 1.0f ) { flareOp = 1.0f; }
+            ca *= flareOp;
         }
         // Skip effect stage if its evaluated contribution is completely zero
-        if ( isOneOneAdd && cr <= 0.0f && cg <= 0.0f && cb <= 0.0f ) {
-            g_rtglStats.skippedSurfs++;
-            return;
-        }
-        if ( !isOneOneAdd && ca <= 0.0f ) {
+        if ( ( isOneOneAdd && ( ( cr <= 0.0f && cg <= 0.0f && cb <= 0.0f ) || ca <= 0.0f ) ) ||
+             ( !isOneOneAdd && ca <= 0.0f ) ) {
             g_rtglStats.skippedSurfs++;
             return;
         }

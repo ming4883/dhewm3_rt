@@ -86,6 +86,8 @@ idCVar rt_eye_worldRaster(      "rt_eye_worldRaster",      "1", CVAR_RENDERER | 
                                 "1 = draw eyeball/iris (DFRM_EYEBALL) materials via WORLD raster (alpha-tested, depth-tested); 0 = legacy ray-traced BLAS (iris invisible)" );
 idCVar rt_eye_depthPush(        "rt_eye_depthPush",        "0.2", CVAR_RENDERER | CVAR_FLOAT,
                                 "Doom units to push coplanar iris quads toward the camera so they win the depth test (rt_eye_worldRaster only)" );
+idCVar rt_flare_opacity(        "rt_flare_opacity",        "0.15", CVAR_RENDERER | CVAR_FLOAT,
+                                "opacity multiplier (0 = off, 0.15 = default, 1 = full) for deform flare and sprite flare effects" );
 
 // P4 lights / sky / illumination (non-ARCHIVE on purpose)
 // Calibration defaults (2026-11-12): RTGL1 treats sphere/spot intensity as
