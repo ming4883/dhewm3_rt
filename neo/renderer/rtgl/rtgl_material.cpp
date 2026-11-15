@@ -1,7 +1,9 @@
 #include "sys/platform.h"
 #include "framework/Common.h"
+#include "framework/FileSystem.h"
 #include "idlib/Str.h"
 #include "idlib/containers/List.h"
+#include "idlib/containers/HashTable.h"
 #include "renderer/tr_local.h"
 #include "renderer/Image.h"
 #include "renderer/Material.h"
@@ -672,6 +674,281 @@ void RTGL_ClassifyMaterial( const idMaterial *mat,
 
     *outFlags = flags;
     *outEmissive = emissive;
+}
+
+
+// ===========================================================================
+// Per-material PBR (roughness / metallic) table + fallback classifier
+// (ported from DUDE's MaterialPbr.cpp & pbr/pbr_materials.cfg).
+//
+// Why this is critical for RTGL1 specular visibility:
+//   1) When RgMeshPrimitivePBREXT is omitted, RTGL1's ASManager.cpp sets
+//      roughnessDefault = 1.0 and metallicDefault = 0.0 on every surface.
+//   2) In CmSVGFAtrous.comp:304, RTGL1 blends `filteredSpec` into `indirect`
+//      via `smoothstep(0.5, 0.75, roughness)` (FAKE_ROUGH_SPECULAR_THRESHOLD = 0.5).
+//      At roughness = 1.0, smoothstep = 1.0 -> 100% of direct/indirect specular
+//      is discarded and replaced by diffuse indirect!
+//   3) Even before that replacement, `metallic = 0.0` sets `ro_s = 0.04`, which
+//      scales the demodulated `unfilteredSpecular` down by 25x in the final image
+//      (whereas the Unfiltered Specular debug view shows the raw demodulated buffer).
+// ===========================================================================
+enum rtglPbrCategory_t {
+    RTGL_PBR_CAT_NONE = 0,
+    RTGL_PBR_CAT_SOLIDMETAL,
+    RTGL_PBR_CAT_HOLLOWMETAL,
+    RTGL_PBR_CAT_MONSTERMETAL,
+    RTGL_PBR_CAT_RUST,
+    RTGL_PBR_CAT_CONCRETE,
+    RTGL_PBR_CAT_CERAMIC,
+    RTGL_PBR_CAT_ROCK,
+    RTGL_PBR_CAT_DIRT,
+    RTGL_PBR_CAT_SAND,
+    RTGL_PBR_CAT_GRAVEL,
+    RTGL_PBR_CAT_SKIN,
+    RTGL_PBR_CAT_EYES,
+    RTGL_PBR_CAT_FLESH,
+    RTGL_PBR_CAT_WOOD,
+    RTGL_PBR_CAT_CLOTH,
+    RTGL_PBR_CAT_CARDBOARD,
+    RTGL_PBR_CAT_ARMOR,
+    RTGL_PBR_CAT_ELECTRONICS,
+    RTGL_PBR_CAT_PLASTIC,
+    RTGL_PBR_CAT_RUBBER,
+    RTGL_PBR_CAT_GLASS,
+    RTGL_PBR_CAT_BPGLASS,
+    RTGL_PBR_CAT_WATER,
+    RTGL_PBR_CAT_OIL,
+    RTGL_PBR_CAT_GELATINOUSFLUID,
+    RTGL_PBR_CAT_COUNT
+};
+
+struct rtglPbrCatDefault_t {
+    int         cat;
+    const char *token;
+    float       metallic;
+    float       roughness;
+};
+
+static rtglPbrCatDefault_t s_pbrCatDefaults[ RTGL_PBR_CAT_COUNT ] = {
+    { RTGL_PBR_CAT_NONE,            "none",            0.00f, 0.45f },
+    { RTGL_PBR_CAT_SOLIDMETAL,      "solidmetal",      0.50f, 0.42f },
+    { RTGL_PBR_CAT_HOLLOWMETAL,     "hollowmetal",     0.32f, 0.42f },
+    { RTGL_PBR_CAT_MONSTERMETAL,    "monstermetal",    0.54f, 0.44f },
+    { RTGL_PBR_CAT_RUST,            "rust",            0.54f, 0.46f },
+    { RTGL_PBR_CAT_CONCRETE,        "concrete",        0.00f, 0.90f },
+    { RTGL_PBR_CAT_CERAMIC,         "ceramic",         0.08f, 0.35f },
+    { RTGL_PBR_CAT_ROCK,            "rock",            0.00f, 0.90f },
+    { RTGL_PBR_CAT_DIRT,            "dirt",            0.00f, 0.90f },
+    { RTGL_PBR_CAT_SAND,            "sand",            0.00f, 0.90f },
+    { RTGL_PBR_CAT_GRAVEL,          "gravel",          0.00f, 0.90f },
+    { RTGL_PBR_CAT_SKIN,            "skin",            0.00f, 0.42f },
+    { RTGL_PBR_CAT_EYES,            "eyes",            0.00f, 0.15f },
+    { RTGL_PBR_CAT_FLESH,           "flesh",           0.00f, 0.42f },
+    { RTGL_PBR_CAT_WOOD,            "wood",            0.00f, 0.75f },
+    { RTGL_PBR_CAT_CLOTH,           "cloth",           0.00f, 0.85f },
+    { RTGL_PBR_CAT_CARDBOARD,       "cardboard",       0.00f, 0.85f },
+    { RTGL_PBR_CAT_ARMOR,           "armor",           0.15f, 0.45f },
+    { RTGL_PBR_CAT_ELECTRONICS,     "electronics",     0.25f, 0.40f },
+    { RTGL_PBR_CAT_PLASTIC,         "plastic",         0.00f, 0.42f },
+    { RTGL_PBR_CAT_RUBBER,          "rubber",          0.00f, 0.70f },
+    { RTGL_PBR_CAT_GLASS,           "glass",           0.00f, 0.05f },
+    { RTGL_PBR_CAT_BPGLASS,         "bpglass",         0.00f, 0.05f },
+    { RTGL_PBR_CAT_WATER,           "water",           0.00f, 0.15f },
+    { RTGL_PBR_CAT_OIL,             "oil",             0.00f, 0.10f },
+    { RTGL_PBR_CAT_GELATINOUSFLUID, "gelatinousfluid", 0.00f, 0.20f },
+};
+
+struct rtglPbrEntry_t {
+    float metallic;   // -1 = inherit category
+    float roughness;  // -1 = inherit category
+    int   category;
+};
+
+static idHashTable<rtglPbrEntry_t> s_pbrTable;
+static bool                        s_pbrTableLoaded = false;
+
+static float RTGL_PbrParseNum( const char *tok ) {
+    if ( !tok || !tok[0] || tok[0] == '*' || tok[0] == '-' || idStr::Icmp( tok, "auto" ) == 0 ) {
+        return -1.0f;
+    }
+    return (float)atof( tok );
+}
+
+static int RTGL_PbrCategoryForName( const char *cat ) {
+    if ( !cat || !cat[0] || cat[0] == '*' || cat[0] == '-' ) {
+        return RTGL_PBR_CAT_NONE;
+    }
+    for ( int i = 1; i < RTGL_PBR_CAT_COUNT; i++ ) {
+        if ( idStr::Icmp( cat, s_pbrCatDefaults[i].token ) == 0 ) {
+            return i;
+        }
+    }
+    if ( idStr::Icmp( cat, "metal" ) == 0 )         { return RTGL_PBR_CAT_SOLIDMETAL; }
+    if ( idStr::Icmp( cat, "metal_painted" ) == 0 ) { return RTGL_PBR_CAT_HOLLOWMETAL; }
+    if ( idStr::Icmp( cat, "ceramic_sheen" ) == 0 ) { return RTGL_PBR_CAT_CERAMIC; }
+    if ( idStr::Icmp( cat, "metal_rust" ) == 0 )    { return RTGL_PBR_CAT_RUST; }
+    if ( idStr::Icmp( cat, "stone" ) == 0 )         { return RTGL_PBR_CAT_CONCRETE; }
+    if ( idStr::Icmp( cat, "liquid" ) == 0 )        { return RTGL_PBR_CAT_WATER; }
+    return RTGL_PBR_CAT_NONE;
+}
+
+static void RTGL_PbrParseTableBuffer( const char *buf, const char *label ) {
+    int count = 0;
+    const char *p = buf;
+    while ( *p ) {
+        const char *lineStart = p;
+        while ( *p && *p != '\n' && *p != '\r' ) { p++; }
+        idStr line( lineStart, 0, (int)( p - lineStart ) );
+        while ( *p == '\n' || *p == '\r' ) { p++; }
+        int c = line.Find( '#' );
+        if ( c >= 0 ) { line = line.Left( c ); }
+
+        char kw[16] = "", cname[64] = "";
+        float cm = 0.0f, cr = 0.0f, cw = 0.0f, ce = 0.0f;
+        if ( sscanf( line.c_str(), "%15s %63s %f %f %f %f", kw, cname, &cm, &cr, &cw, &ce ) >= 4 &&
+             idStr::Icmp( kw, "@cat" ) == 0 ) {
+            int cat = RTGL_PbrCategoryForName( cname );
+            if ( cat > RTGL_PBR_CAT_NONE && cat < RTGL_PBR_CAT_COUNT ) {
+                s_pbrCatDefaults[cat].metallic  = idMath::ClampFloat( 0.0f, 1.0f, cm );
+                s_pbrCatDefaults[cat].roughness = idMath::ClampFloat( 0.03f, 1.0f, cr );
+            }
+            continue;
+        }
+
+        char name[256] = "", mTok[32] = "", rTok[32] = "", cTok[32] = "";
+        int fields = sscanf( line.c_str(), "%255s %31s %31s %31s", name, mTok, rTok, cTok );
+        if ( fields >= 3 ) {
+            rtglPbrEntry_t e;
+            float m = RTGL_PbrParseNum( mTok );
+            float r = RTGL_PbrParseNum( rTok );
+            e.metallic  = ( m < 0.0f ) ? -1.0f : idMath::ClampFloat( 0.0f, 1.0f, m );
+            e.roughness = ( r < 0.0f ) ? -1.0f : idMath::ClampFloat( 0.03f, 1.0f, r );
+            e.category  = RTGL_PbrCategoryForName( cTok );
+            idStr key( name );
+            key.ToLower();
+            s_pbrTable.Set( key, e );
+            count++;
+        }
+    }
+    common->Printf( "[RTGL] PBR material table: %d entries loaded from %s\n", count, label );
+}
+
+static void RTGL_EnsurePbrTableLoaded( void ) {
+    if ( s_pbrTableLoaded ) { return; }
+    s_pbrTableLoaded = true;
+    s_pbrTable.Clear();
+
+    const char *paths[] = { "pbr/pbr_materials.cfg", "pbr/pbr_overrides.cfg" };
+    for ( int i = 0; i < 2; i++ ) {
+        char *buf = NULL;
+        int len = fileSystem->ReadFile( paths[i], (void **)&buf, NULL );
+        if ( len > 0 && buf ) {
+            RTGL_PbrParseTableBuffer( buf, paths[i] );
+            fileSystem->FreeFile( buf );
+        }
+    }
+}
+
+void RTGL_GetMaterialPBR( const idMaterial *mat,
+                          float *outRoughness, float *outMetallic ) {
+    if ( !rt_pbr_enable.GetBool() || !mat ) {
+        *outRoughness = 1.0f;
+        *outMetallic  = 0.0f;
+        return;
+    }
+
+    RTGL_EnsurePbrTableLoaded();
+
+    // Check if the material has an active SL_SPECULAR stage.
+    bool hasSpecularStage = false;
+    for ( int i = 0; i < mat->GetNumStages(); i++ ) {
+        const shaderStage_t *st = mat->GetStage( i );
+        if ( st && st->lighting == SL_SPECULAR && st->texture.image ) {
+            hasSpecularStage = true;
+            break;
+        }
+    }
+
+    // Decals and unlit surfaces without specular should stay matte dielectric.
+    if ( !hasSpecularStage && ( RTGL_IsDecal( mat ) || !mat->ReceivesLighting() ) ) {
+        *outRoughness = 0.90f;
+        *outMetallic  = 0.0f;
+        return;
+    }
+
+    float metallic  = -1.0f;
+    float roughness = -1.0f;
+
+    idStr key( mat->GetName() );
+    key.ToLower();
+
+    rtglPbrEntry_t *entry = NULL;
+    if ( s_pbrTable.Get( key, &entry ) && entry ) {
+        int cat = entry->category;
+        if ( cat > RTGL_PBR_CAT_NONE && cat < RTGL_PBR_CAT_COUNT ) {
+            metallic  = s_pbrCatDefaults[cat].metallic;
+            roughness = s_pbrCatDefaults[cat].roughness;
+        }
+        if ( entry->metallic  >= 0.0f ) { metallic  = entry->metallic; }
+        if ( entry->roughness >= 0.0f ) { roughness = entry->roughness; }
+    }
+
+    // Heuristic fallback if not in pbr_materials.cfg (or if both were '*' with category 'none')
+    if ( metallic < 0.0f || roughness < 0.0f ) {
+        surfTypes_t st = mat->GetSurfaceType();
+        if ( st == SURFTYPE_METAL || st == SURFTYPE_RICOCHET ) {
+            metallic  = 0.50f;
+            roughness = 0.38f;
+        } else if ( st == SURFTYPE_GLASS ) {
+            metallic  = 0.00f;
+            roughness = 0.05f;
+        } else if ( st == SURFTYPE_FLESH ) {
+            metallic  = 0.00f;
+            roughness = 0.42f;
+        } else if ( st == SURFTYPE_PLASTIC ) {
+            metallic  = 0.00f;
+            roughness = 0.40f;
+        } else if ( st == SURFTYPE_STONE ) {
+            metallic  = 0.00f;
+            roughness = hasSpecularStage ? 0.48f : 0.90f;
+        } else if ( key.Find( "base_floor/" ) >= 0 || key.Find( "base_trim/" ) >= 0 ||
+                    key.Find( "base_door/" ) >= 0  || key.Find( "base_wall/" ) >= 0 ||
+                    key.Find( "base_light/" ) >= 0 || key.Find( "mcity/" ) >= 0 ||
+                    key.Find( "alphalabs/" ) >= 0  || key.Find( "enpro/" ) >= 0 ||
+                    key.Find( "delta/" ) >= 0      || key.Find( "commoutside/" ) >= 0 ||
+                    key.Find( "recycling/" ) >= 0  || key.Find( "monorail/" ) >= 0 ||
+                    key.Find( "weapons/" ) >= 0 ) {
+            metallic  = hasSpecularStage ? 0.35f : 0.15f;
+            roughness = hasSpecularStage ? 0.40f : 0.60f;
+        } else if ( key.Find( "characters/" ) >= 0 || key.Find( "monsters/" ) >= 0 ) {
+            metallic  = 0.05f;
+            roughness = hasSpecularStage ? 0.42f : 0.65f;
+        } else {
+            metallic  = hasSpecularStage ? 0.20f : 0.00f;
+            roughness = hasSpecularStage ? 0.45f : 0.85f;
+        }
+    }
+
+    // Crucial for RTGL1 (`CmSVGFAtrous.comp:304` + `RtRaygenIndirect.inl:92`):
+    // RTGL1's `FAKE_ROUGH_SPECULAR_THRESHOLD` is `0.50` (`0.50..0.75` smoothstep).
+    // Any surface with an explicit Doom 3 `specularmap` (`SL_SPECULAR`) was
+    // authored to show specular highlights! If a category (e.g. `rust` at 0.49
+    // or `armor` at 0.50) puts roughness right at or above 0.50, RTGL1 stops
+    // tracing GGX specular bounce rays (`useDiffuse(r) = r >= 0.5`) and blends
+    // `filteredSpec` into `indirect`. Clamping specular-mapped materials to
+    // `<= 0.46` guarantees they stay in the true GGX specular path, and raising
+    // their minimum metallic to `>= 0.25` compensates for RTGL1's `0.04` F0
+    // demodulation (`ro_s = mix(0.04, albedo, metallic)`).
+    if ( hasSpecularStage ) {
+        if ( roughness > 0.46f ) { roughness = 0.46f; }
+        if ( metallic  < 0.25f ) { metallic  = 0.25f; }
+    }
+
+    roughness = idMath::ClampFloat( 0.03f, 1.0f, roughness * rt_pbr_roughnessScale.GetFloat() );
+    metallic  = idMath::ClampFloat( 0.00f, 1.0f, metallic  * rt_pbr_metallicScale.GetFloat() );
+
+    *outRoughness = roughness;
+    *outMetallic  = metallic;
 }
 
 #endif // D3_RTGL

@@ -69,6 +69,8 @@ bool         RTGL_IsSkySurface( const idMaterial *mat );
 bool         RTGL_IsDecal( const idMaterial *mat );  // multiply-blend decal detection (by blend bits, not sort)
 void         RTGL_ClassifyMaterial( const idMaterial *mat,
                                     RgMeshPrimitiveFlags *outFlags, float *outEmissive );
+void         RTGL_GetMaterialPBR( const idMaterial *mat,
+                                  float *outRoughness, float *outMetallic );
 
 // ---------------------------------------------------------------------------
 // P4 lights / sky (rtgl_light.cpp / rtgl_sky.cpp)

@@ -400,6 +400,36 @@ static void RTGL_SubmitSurf( const drawSurf_t *surf, int ordinal,
     primFlags |= RG_MESH_PRIMITIVE_DONT_GENERATE_NORMALS;
     const char *texName = RTGL_PrimaryTexture( surf->material, sregs );
 
+    // For opaque light-fixture surfaces (e.g. `striplight3`, `bluetex4a_ed`)
+    // that have both a diffusemap stage and a `blend add` glow stage with
+    // `red Parm0; green Parm1; blue Parm2`, evaluate the additive stage's
+    // color registers when `emissive > 0` so the fixture's screen-space glow
+    // reflects the entity's light color instead of plain grey diffuse.
+    if ( !isEffectSurf && emissive > 0.0f && sregs ) {
+        for ( int s = 0; s < surf->material->GetNumStages(); s++ ) {
+            const shaderStage_t *st = surf->material->GetStage( s );
+            if ( !st || st->lighting != SL_AMBIENT ) { continue; }
+            if ( st->conditionRegister >= 0 && sregs[ st->conditionRegister ] == 0.0f ) {
+                continue;
+            }
+            int dstB = st->drawStateBits & GLS_DSTBLEND_BITS;
+            int srcB = st->drawStateBits & GLS_SRCBLEND_BITS;
+            if ( dstB == GLS_DSTBLEND_ONE && srcB != GLS_SRCBLEND_ZERO ) {
+                float cr = sregs[ st->color.registers[0] ];
+                float cg = sregs[ st->color.registers[1] ];
+                float cb = sregs[ st->color.registers[2] ];
+                if ( cr < 0.0f ) { cr = 0.0f; } else if ( cr > 1.0f ) { cr = 1.0f; }
+                if ( cg < 0.0f ) { cg = 0.0f; } else if ( cg > 1.0f ) { cg = 1.0f; }
+                if ( cb < 0.0f ) { cb = 0.0f; } else if ( cb > 1.0f ) { cb = 1.0f; }
+                // Blend 50% neutral white (for diffuse albedo) with 50% fixture tint
+                stageColorPacked = RTGL_PackColorF( 0.5f + 0.5f * cr,
+                                                    0.5f + 0.5f * cg,
+                                                    0.5f + 0.5f * cb, 1.0f );
+                break;
+            }
+        }
+    }
+
     int colorMode = rt_dbg_colorMode.GetInteger();
     RgColor4DPacked32 primColor = ( colorMode != 0 )
         ? RTGL_DebugColor( colorMode, objectID, ordinal, entityIndex,
@@ -421,9 +451,19 @@ static void RTGL_SubmitSurf( const drawSurf_t *surf, int ordinal,
     mesh.animationTime = 0.0f;
     mesh.localLightsIntensity = 1.0f;
 
+    float pbrRoughness = 1.0f;
+    float pbrMetallic  = 0.0f;
+    RTGL_GetMaterialPBR( surf->material, &pbrRoughness, &pbrMetallic );
+
+    RgMeshPrimitivePBREXT pbrExt = {};
+    pbrExt.sType = RG_STRUCTURE_TYPE_MESH_PRIMITIVE_PBR_EXT;
+    pbrExt.pNext = NULL;
+    pbrExt.metallicDefault  = pbrMetallic;
+    pbrExt.roughnessDefault = pbrRoughness;
+
     RgMeshPrimitiveInfo prim = {};
     prim.sType = RG_STRUCTURE_TYPE_MESH_PRIMITIVE_INFO;
-    prim.pNext = NULL;
+    prim.pNext = &pbrExt;
     prim.flags = primFlags;
     prim.primitiveIndexInMesh = 0;
     prim.pVertices = s_verts.Ptr();

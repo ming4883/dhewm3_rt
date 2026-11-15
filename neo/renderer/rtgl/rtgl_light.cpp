@@ -378,9 +378,34 @@ static void RTGL_UploadOneLight( const viewLight_t *vLight, const idVec3 &camPos
     float radiusScale = rt_light_radiusScale.GetFloat();
     if ( radiusScale <= 0.0f ) { radiusScale = 1.0f; }
 
-    // Origin in raw DOOM units. globalLightOrigin accounts for lightCenter /
-    // parallel lights; use it for point/spot position.
+    // Origin in raw DOOM units.
+    // For point lights, Doom 3 mappers often set `light_center` (up to cientos
+    // of units) solely to shift the N.L bump-map highlight or stencil-shadow
+    // apex, while the light's actual 3D attenuation volume (falloff & XY cookie)
+    // ALWAYS stays centered on `p.origin`! On `noshadows 1` lights (e.g. Hangar
+    // upper blue lights `light_4933..5261` with `origin.z=664` and
+    // `light_center=(-84,0,124)`), `globalLightOrigin` pushes the emitter 150
+    // units behind the angled ceiling fixture (`z=788` behind `z=729..746`) where
+    // RTGL1's physical shadow rays are 100% occluded by the ceiling. Even on
+    // shadowed fill lights (e.g. `light_5253` in Hangar with `origin.z=-172` and
+    // `light_center=(32,320,868)`), an extreme `light_center` moves the sphere
+    // light 868 units away from the volume center. Clamp `lightCenter` to at
+    // most 25% of `lightRadius` (and use `p.origin` directly when `p.noShadows`
+    // is set) so the physical emitter stays inside the room and matches Doom 3's
+    // attenuation box center.
     idVec3 pos = vLight->globalLightOrigin;
+    if ( p.pointLight && !p.parallel ) {
+        if ( p.noShadows ) {
+            pos = p.origin;
+        } else {
+            idVec3 ofs = vLight->globalLightOrigin - p.origin;
+            float maxOfs = p.lightRadius.Length() * 0.25f;
+            if ( ofs.Length() > maxOfs && maxOfs > 0.0f ) {
+                ofs.Normalize();
+                pos = p.origin + ofs * maxOfs;
+            }
+        }
+    }
 
     // Compute raw Doom-unit radius for filtering and bounds checking
     float rawRadius = p.lightRadius.Length();
@@ -453,7 +478,14 @@ static void RTGL_UploadOneLight( const viewLight_t *vLight, const idVec3 &camPos
         // become the unbounded RTGL1 global sun (see header block: whole-scene
         // bright/dark pop on small camera rotations). rt_sun_enable is the
         // view-independent way to get a global sun.
-        if ( rt_light_skipParallel.GetBool() ) {
+        // Skip tiny local parallel lights (e.g. mars_city1 `light_5262` and
+        // `light_5351` with `light_radius = 32 48 32`, `rawRadius = 66`): in
+        // Doom 3 they only touch a tiny 64-unit doorway trim box, whereas in
+        // RTGL1 `RgLightDirectionalEXT` becomes an UNBOUNDED global sun for the
+        // entire map that hijacks 50% of ReSTIR DI reservoirs (`initCombinedReservoir`)
+        // and pops the whole Hangar bright/dark when crossing the view frustum.
+        // Only allow map-scale outdoor parallel suns (`rawRadius >= 500`).
+        if ( rt_light_skipParallel.GetBool() || rawRadius < 500.0f ) {
             g_rtglStats.skippedLights++;
             g_rtglStats.skippedDir++;
             RTGL_DumpLight( uid, "SKIP_PARALLEL", pos, 0.0f, 0.0f, color, false, pos, 0.0f, 0.0f, "skipped" );

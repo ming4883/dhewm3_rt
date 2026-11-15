@@ -65,9 +65,9 @@ idCVar rt_dbg_lightViz(    "rt_dbg_lightViz",    "0", CVAR_RENDERER | CVAR_INTEG
 idCVar rt_decal_mode(           "rt_decal_mode",           "1", CVAR_RENDERER | CVAR_INTEGER,
                                 "multiply-blend decals: 0 legacy, 1 baked-alpha cutout (default), 2 skip, 3 DECAL overlay; bakes coverage alpha from RGB (decal TGAs have no alpha)" );
 idCVar rt_emissive_enable(      "rt_emissive_enable",      "1", CVAR_RENDERER | CVAR_BOOL,
-                                "1 = enable mesh light emission from blend-add surfaces (0 = disable); scale via rt_emissive_mult; 2026-11-14 restored at low mult" );
-idCVar rt_emissive_mult(        "rt_emissive_mult",        "0.001", CVAR_RENDERER | CVAR_FLOAT,
-                                "multiplier on surface emission when enabled" );
+                                "1 = enable mesh light emission from blend-add surfaces (0 = disable); scale via rt_emissive_mult; 2026-11-14 restored" );
+idCVar rt_emissive_mult(        "rt_emissive_mult",        "0.35", CVAR_RENDERER | CVAR_FLOAT,
+                                "multiplier on surface emission when enabled (renders glowing fixture bulbs in screenEmission)" );
 idCVar rt_normalmap_enable(    "rt_normalmap_enable",    "1", CVAR_RENDERER | CVAR_BOOL,
                                 "1 = bind the material bump stage as an in-memory tangent-space normal map (Plan B); 0 = off" );
 idCVar rt_ui_enable(           "rt_ui_enable",           "1", CVAR_RENDERER | CVAR_BOOL,
@@ -88,6 +88,12 @@ idCVar rt_eye_depthPush(        "rt_eye_depthPush",        "0.2", CVAR_RENDERER 
                                 "Doom units to push coplanar iris quads toward the camera so they win the depth test (rt_eye_worldRaster only)" );
 idCVar rt_flare_opacity(        "rt_flare_opacity",        "0.15", CVAR_RENDERER | CVAR_FLOAT,
                                 "opacity multiplier (0 = off, 0.15 = default, 1 = full) for deform flare and sprite flare effects" );
+idCVar rt_pbr_enable(           "rt_pbr_enable",           "1",    CVAR_RENDERER | CVAR_BOOL,
+                                "1 = assign per-material PBR roughness/metallic via RgMeshPrimitivePBREXT (loads pbr/pbr_materials.cfg + heuristics); 0 = legacy roughness 1.0" );
+idCVar rt_pbr_roughnessScale(   "rt_pbr_roughnessScale",   "1.0",  CVAR_RENDERER | CVAR_FLOAT,
+                                "global multiplier on per-material PBR roughness (default 1.0)" );
+idCVar rt_pbr_metallicScale(    "rt_pbr_metallicScale",    "1.0",  CVAR_RENDERER | CVAR_FLOAT,
+                                "global multiplier on per-material PBR metallic (default 1.0)" );
 
 // P4 lights / sky / illumination (non-ARCHIVE on purpose)
 // Calibration defaults (2026-11-12): RTGL1 treats sphere/spot intensity as
@@ -109,7 +115,7 @@ idCVar rt_flare_opacity(        "rt_flare_opacity",        "0.15", CVAR_RENDERER
 // Kept as an OFF-by-default experiment knob.
 idCVar rt_light_enable(        "rt_light_enable",        "1", CVAR_RENDERER | CVAR_BOOL,
                                "upload viewLights as RTGL1 RgLight (0 = lights off)" );
-idCVar rt_light_intensity(     "rt_light_intensity",     "2000", CVAR_RENDERER | CVAR_FLOAT,
+idCVar rt_light_intensity(     "rt_light_intensity",     "4000", CVAR_RENDERER | CVAR_FLOAT,
                                "base scale on imported sphere/spot light intensity; multiplied by (extent/refRadius)^sizeExponent" );
 idCVar rt_light_sizeExponent(  "rt_light_sizeExponent",  "1.8", CVAR_RENDERER | CVAR_FLOAT,
                                "scales intensity by (extent/refRadius)^exponent so larger Doom light volumes reach proportionally farther under RTGL1 1/d^2 falloff" );
@@ -118,9 +124,9 @@ idCVar rt_light_refRadius(     "rt_light_refRadius",     "70", CVAR_RENDERER | C
 idCVar rt_light_dirIntensity(   "rt_light_dirIntensity",   "2", CVAR_RENDERER | CVAR_FLOAT,
                                 "illuminance (lux) for imported parallel/directional lights; sharing rt_light_intensity flooded the whole scene" );
 idCVar rt_light_skipParallel(   "rt_light_skipParallel",   "0", CVAR_RENDERER | CVAR_BOOL,
-                                "0 = import p.parallel lights as directional (2026-11-14 restored); 1 = skip them (RTGL1 directional = ONE unbounded GLOBAL sun, but Doom3 parallel lights are bounded/frustum-culled, so importing them can pop the whole scene bright/dark on a ~5 deg camera rotation, mars_city1 start). Use rt_sun_enable for a view-independent global sun" );
-idCVar rt_light_radiusScale(   "rt_light_radiusScale",   "0.05", CVAR_RENDERER | CVAR_FLOAT,
-                               "scale on spherical/spot light radius (raw Doom units)" );
+                                "0 = import map-scale p.parallel lights as directional (tiny local parallel lights < 500 units are always skipped); 1 = skip all" );
+idCVar rt_light_radiusScale(   "rt_light_radiusScale",   "0.08", CVAR_RENDERER | CVAR_FLOAT,
+                               "scale on spherical/spot light radius (raw Doom units); larger solid angle reduces ReSTIR/TAA firefly clamping" );
 idCVar rt_light_maxLights(     "rt_light_maxLights",     "0", CVAR_RENDERER | CVAR_INTEGER,
                                "per-frame light budget cap (<4096), 0 = unlimited" );
 idCVar rt_light_spotAngle(     "rt_light_spotAngle",     "45", CVAR_RENDERER | CVAR_FLOAT,
@@ -133,8 +139,8 @@ idCVar rt_light_skipNoShadows( "rt_light_skipNoShadows", "0", CVAR_RENDERER | CV
                                "skip noShadow lights (kept by default; RTGL1 shadows are physical)" );
 idCVar rt_light_skipNoInteractions( "rt_light_skipNoInteractions", "1", CVAR_RENDERER | CVAR_BOOL,
                                "1 = skip lights with no visible surface interactions (mirrors R_RemoveUnecessaryViewLights)" );
-idCVar rt_light_maxRadius(         "rt_light_maxRadius",         "2000", CVAR_RENDERER | CVAR_FLOAT,
-                               "skip lights with raw radius > maxRadius (0 = unlimited); eliminates massive sky-dome / filler lights" );
+idCVar rt_light_maxRadius(         "rt_light_maxRadius",         "2500", CVAR_RENDERER | CVAR_FLOAT,
+                               "skip lights with raw radius > maxRadius (0 = unlimited); keeps room-spanning lights like Hangar light_5253 (2114) while skipping sky domes (>4800)" );
 idCVar rt_light_cullFrustumBounds( "rt_light_cullFrustumBounds", "1",    CVAR_RENDERER | CVAR_BOOL,
                                "1 = skip point lights whose vertical bounding volume is completely above camera (default 1)" );
 idCVar rt_sun_enable(          "rt_sun_enable",          "0", CVAR_RENDERER | CVAR_BOOL,
@@ -461,9 +467,53 @@ void RTGL_EndFrame( void ) {
 
     RTGL_DefaultCamera();  // present a valid camera even for an empty frame
 
-    // P4: build sky + illumination params and link them into the pNext chain.
+    // P4: build tonemapping + textures + illumination + sky params and link
+    // them into the pNext chain.
+    // Critically:
+    // 1) RTGL1's default `taaAntiSparkle = 0.25f` clamps every new frame's
+    //    `unfilteredDirect` to `1.414 * neighbourMean` in `CmSVGFTemporalAccumulation.comp`,
+    //    which crushes 1-spp ReSTIR DI samples (where half the 3x3 neighbours
+    //    chose a different light and are 0) and makes filtered `diffuse direct`
+    //    much darker than `unfiltered diffuse direct`. Setting `taaAntiSparkle = 0.0f`
+    //    and `taaVarianceGamma = 6.0f` preserves full direct diffuse energy.
+    // 2) Setting `ev100Min = -2.0f` (instead of default `0.0f`) lets auto-exposure
+    //    properly expose dark Doom 3 rooms without crushing midtones.
+    // 3) Setting `emissionMapBoost = 2.0f` (instead of default `100.0f`) allows
+    //    `rt_emissive_enable = 1` (`rt_emissive_mult = 0.35`) to make fixture
+    //    panels visibly glow on screen without flooding indirect GI.
+    RgDrawFrameTonemappingParams tnmp = {};
+    tnmp.sType = RG_STRUCTURE_TYPE_DRAW_FRAME_TONEMAPPING_PARAMS;
+    tnmp.pNext = NULL;
+    tnmp.disableEyeAdaptation = 0;
+    tnmp.ev100Min = -2.0f;
+    tnmp.ev100Max = 7.0f;
+    tnmp.luminanceWhitePoint = 10.0f;
+    tnmp.saturation = RTGL_V3( 0.0f, 0.0f, 0.0f );
+    tnmp.crosstalk = RTGL_V3( 1.0f, 1.0f, 1.0f );
+    tnmp.contrast = 0.05f;
+    tnmp.hdrBrightness = 1.0f;
+    tnmp.hdrContrast = 0.1f;
+    tnmp.hdrSaturation = RTGL_V3( 0.25f, 0.25f, 0.25f );
+
+    RgDrawFrameTexturesParams texParams = {};
+    texParams.sType = RG_STRUCTURE_TYPE_DRAW_FRAME_TEXTURES_PARAMS;
+    texParams.pNext = &tnmp;
+    texParams.dynamicSamplerFilter = RG_SAMPLER_FILTER_LINEAR;
+    texParams.normalMapStrength = 1.0f;
+    texParams.emissionMapBoost = 15.0f;
+    texParams.emissionMaxScreenColor = 1.5f;
+    texParams.minRoughness = 0.0f;
+    texParams.heightMapDepth = 0.02f;
+    texParams.clampDirect = 500.0f;
+    texParams.clampIndirect = 500.0f;
+    texParams.clampSpecular = 500.0f;
+    texParams.indirectMaxSolidAngle = 0.05f;
+    texParams.taaVarianceGamma = 6.0f;
+    texParams.taaAntiSparkle = 0.0f;
+
     RgDrawFrameIlluminationParams illum;
     RTGL_BuildIlluminationParams( &illum );
+    illum.pNext = &texParams;
 
     RgDrawFrameSkyParams sky;
     RTGL_BuildSkyParams( &sky );

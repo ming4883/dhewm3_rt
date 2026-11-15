@@ -32,6 +32,9 @@ extern idCVar rt_ui_worldGuisDepthBias; // pull GUI slightly toward camera to wi
 extern idCVar rt_eye_worldRaster;    // 1 = route eyeball/iris materials through WORLD raster (alpha-tested, depth-tested) instead of ray-traced BLAS
 extern idCVar rt_eye_depthPush;      // Doom-unit camera-ward push for coplanar iris quads (rt_eye_worldRaster only)
 extern idCVar rt_flare_opacity;      // opacity scale (0..1) for light flare / glare additive surfaces (default 0.15)
+extern idCVar rt_pbr_enable;         // 1 = assign per-material PBR roughness/metallic from pbr_materials.cfg + heuristics
+extern idCVar rt_pbr_roughnessScale; // global multiplier on per-material PBR roughness (default 1.0)
+extern idCVar rt_pbr_metallicScale;  // global multiplier on per-material PBR metallic (default 1.0)
 
 // P4 lights / sky / illumination (non-ARCHIVE on purpose)
 extern idCVar rt_light_enable;          // master switch for viewLight -> RgLight upload
