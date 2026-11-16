@@ -270,21 +270,19 @@ static bool RTGL_IsEyeRasterMaterial( const idMaterial *mat ) {
 // Gate the bake on rt_decal_mode:
 //   bakeMode 1 = white-transparent, preserve RGB (eyeball iris alpha-cutout)
 //   bakeMode 2 = black-transparent, invert RGB + alpha = maxRGB (splat decals)
-//   bakeMode 3 = white-transparent, unmix white background from RGB (Solution 1:
-//                WORLD-raster darkened alpha for multiply/filter decals & hair)
+//   bakeMode 3 = white-transparent, unmix white background from RGB (eyeball iris)
 //   bakeMode 4 = black-transparent, preserve RGB + alpha = maxRGB (translucent
 //                diffusemap decals: sentry_spot, floor_stripe, alphabet4, etc.)
+//   bakeMode 5 = white-transparent multiply decal (`blend filter` / `gl_dst_color,gl_zero`
+//                such as `skid`, `scorch`, `stain01`, `hair`): attenuates unmixed
+//                RGB by `(p[c] - mn) / 8` so unlit WORLD-raster alpha blending
+//                darkens dark floors instead of painting glowing orange/yellow marks!
 static int RTGL_DecalBakeMode( const idMaterial *mat ) {
-    // Iris (`DFRM_EYEBALL` + `blend filter`) uses Solution 1's bakeMode 3 just
-    // like other `blend filter` overlays: unmixing the white sclera component
-    // `mn = min(R,G,B)` sets `alpha = 255 - mn` and `rgb = rgb - mn`, so WORLD
-    // alpha-blending `src_rgb * a + dst * (1 - a)` reproduces `dst * (tex/255)`
-    // across pupil, mid-iris, limbal ring, and sclera without any alpha-test hole.
     if ( RTGL_IsEyeRasterMaterial( mat ) ) { return 3; }
     int dm = rt_decal_mode.GetInteger();
     if ( dm != 1 && dm != 3 ) { return 0; }
     int bt = RTGL_DecalBlendType( mat );
-    if ( bt == 1 ) { return 3; } // unmix white background so edges never halo white
+    if ( bt == 1 ) { return 5; }
     return bt;
 }
 
@@ -376,22 +374,33 @@ static void RTGL_ProvideTexture( const char *loadName, const char *provideName, 
                 // Eye iris cutout: white = transparent, preserve iris RGB
                 p[3] = (byte)( 255 - mx );
             } else if ( bakeMode == 3 ) {
-                // Solution 1 (multiply / blend filter decals, hair & lenses):
-                // In Doom 3, `blend filter` computes dst = dst * src_rgb, where
-                // white (255,255,255) is identity (transparent) and grey/brown
-                // edges (e.g. 175) darken the background by ~30%. Converting
-                // this to standard alpha blend `src_rgb * a + dst * (1 - a)`
-                // requires unmixing the white background component `mn` from
-                // `src_rgb`; otherwise `src_rgb` (~130..230) paints bright grey/
-                // white blotches over dark floors and white fringes around hair.
-                // For 32-bit TGAs that also author an alpha mask (e.g. scientist
-                // glasses2_fx.tga, zsgogs2.tga where empty frame border has
-                // RGB=255, A=0), modulate by original alpha p[3] as well.
+                // Eyeball iris (`DFRM_EYEBALL` + `blend filter` over a bright white
+                // sclera where dst ~= 1.0): unmix the white sclera component `mn`
+                // so `src_rgb * a + dst * (1 - a)` reproduces `dst * (tex/255)`
+                // across pupil, mid-iris, limbal ring, and sclera.
                 int cov = ( ( 255 - mn ) * (int)p[3] + 127 ) / 255;
                 p[3] = (byte)cov;
                 p[0] = (byte)( p[0] - mn );
                 p[1] = (byte)( p[1] - mn );
                 p[2] = (byte)( p[2] - mn );
+            } else if ( bakeMode == 5 ) {
+                // Multiply / `blend filter` decals (`skid`, `scorch`, `stain01`,
+                // `stainwallred`, `hair`, `glasses2_fx`):
+                // Original Doom 3 computes `dst * tex_rgb`, which is proportional
+                // to the floor's lighting `dst`. In RTGL1's unlit WORLD rasterizer,
+                // standard alpha blend `src_rgb * a + dst * (1 - a)` adds an
+                // UNLIT `src_rgb * a` term that gets amplified by post-raster
+                // auto-exposure! With `p[c] - mn`, a slightly warm grey tire skid
+                // (`R=180, G=150, B=130` -> `unmixed = (50, 20, 0)`) turns into a
+                // glowing 100%-saturated bright orange track on dark hangar floors.
+                // Scaling the unmixed chroma down by 1/8 (`>> 3`) keeps subtle dark
+                // tinting (e.g. dark dried blood/mud) while ensuring multiply decals
+                // primarily darken (`dst * (1 - a)`) rather than emit unlit orange.
+                int cov = ( ( 255 - mn ) * (int)p[3] + 127 ) / 255;
+                p[3] = (byte)cov;
+                p[0] = (byte)( ( p[0] - mn ) >> 3 );
+                p[1] = (byte)( ( p[1] - mn ) >> 3 );
+                p[2] = (byte)( ( p[2] - mn ) >> 3 );
             } else if ( bakeMode == 4 ) {
                 // Translucent diffusemap decals (sentry_spot, floor_stripe,
                 // alphabet4, alphabet6, military_logo, corp_logo1, uacosticker,
@@ -407,12 +416,15 @@ static void RTGL_ProvideTexture( const char *loadName, const char *provideName, 
                 cov = ( cov * (int)p[3] + 127 ) / 255;
                 p[3] = (byte)cov;
             } else {
-                // black = transparent (gl_zero, gl_one_minus_src_color):
-                // coverage = brightness; unmix black and darken surviving mark
+                // black = transparent (`gl_zero, gl_one_minus_src_color`, e.g.
+                // `footprint01`, `dsplat2`, `duffysplat`):
+                // Original Doom 3 computes `dst * (1 - src_rgb)`. Attenuate the
+                // unmixed chroma by 1/6 so blood/bootprints look dark crimson/brown
+                // on shadowed floors instead of glowing bright red.
                 p[3] = (byte)mx;
-                p[0] = (byte)( mx - p[0] );
-                p[1] = (byte)( mx - p[1] );
-                p[2] = (byte)( mx - p[2] );
+                p[0] = (byte)( ( mx - p[0] ) / 6 );
+                p[1] = (byte)( ( mx - p[1] ) / 6 );
+                p[2] = (byte)( ( mx - p[2] ) / 6 );
             }
         }
     }
