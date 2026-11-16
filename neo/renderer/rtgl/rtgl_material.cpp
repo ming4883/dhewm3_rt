@@ -334,6 +334,20 @@ static void RTGL_ProvideTexture( const char *loadName, const char *provideName, 
             }
         }
         clamp = true;
+    } else if ( idStr::Icmp( loadName, "_noFalloff" ) == 0 ) {
+        // Synthesize Doom 3's builtin "_noFalloff" ramp (64x16 white interior with
+        // 0 at x=0 and x=63, used by `lights/defaultProjectedLight`).
+        width = 64;
+        height = 16;
+        pic = (byte *)R_StaticAlloc( width * height * 4 );
+        memset( pic, 0, width * height * 4 );
+        for ( int y = 0; y < height; y++ ) {
+            for ( int x = 1; x < width - 1; x++ ) {
+                byte *px = pic + ( y * width + x ) * 4;
+                px[0] = px[1] = px[2] = px[3] = 255;
+            }
+        }
+        clamp = true;
     } else if ( loadName[0] == '_' ) {
         return; // other procedural internal images (_white, _flat, etc.)
     } else {
@@ -512,6 +526,18 @@ const char * RTGL_GuiStageTexture( const shaderStage_t *stage, int bakeMode ) {
         RTGL_ProvideTexture( name, derived, bakeMode, NULL, clamp );
         return derived;
     }
+    RTGL_ProvideTexture( name, name, 0, NULL, clamp );
+    return name;
+}
+
+// Provide a 2D light projection cookie or falloff texture.
+const char * RTGL_LightTexture( const idImage *img ) {
+    if ( !img || img->type != TT_2D || img->imgName.Length() <= 0 ) { return NULL; }
+    const char *name = img->imgName.c_str();
+    if ( name[0] == '_' && idStr::Icmp( name, "_noFalloff" ) != 0 && idStr::Icmp( name, "_quadratic" ) != 0 ) {
+        return NULL;
+    }
+    const bool clamp = ( img->repeat != TR_REPEAT );
     RTGL_ProvideTexture( name, name, 0, NULL, clamp );
     return name;
 }

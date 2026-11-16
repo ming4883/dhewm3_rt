@@ -64,6 +64,7 @@ void         RTGL_MaterialShutdown( void );
 const char * RTGL_PrimaryTexture( const idMaterial *mat, const float *shaderRegisters = NULL );  // stable name, lazily provided
 const char * RTGL_GuiTexture( const idMaterial *mat );      // P-UI: GUI/2D texture name, or NULL (= RTGL1 white)
 const char * RTGL_GuiStageTexture( const shaderStage_t *stage, int bakeMode );
+const char * RTGL_LightTexture( const idImage *img );
 const char * RTGL_ProvideSkyFaceTexture( const char *cubeBaseName, cubeFiles_t cubeType, int side );
 bool         RTGL_IsSkySurface( const idMaterial *mat );
 bool         RTGL_IsDecal( const idMaterial *mat );  // multiply-blend decal detection (by blend bits, not sort)

@@ -52,6 +52,7 @@ extern idCVar rt_light_skipNoShadows;   // skip noShadow lights (or keep as unsh
 extern idCVar rt_light_skipNoInteractions; // 1 = skip lights with no visible interactions (local/global/translucentInteractions)
 extern idCVar rt_light_maxRadius;          // skip lights with raw radius > maxRadius (0 = unlimited, default 2000)
 extern idCVar rt_light_cullFrustumBounds;  // 1 = skip point lights whose volume bottom is far above camera view (default 1)
+extern idCVar rt_light_useBoundsAndCookie; // 1 = pass Doom 3 OBB/frustum lightProject + cookie/falloff textures to RTGL1
 extern idCVar rt_sun_enable;            // inject one directional "sun" (debug / ambient fill)
 extern idCVar rt_sun_intensity;         // sun illuminance (lux-like)
 extern idCVar rt_sun_dirX;              // sun direction (from sun toward scene)

@@ -115,7 +115,7 @@ idCVar rt_pbr_metallicScale(    "rt_pbr_metallicScale",    "1.0",  CVAR_RENDERER
 // Kept as an OFF-by-default experiment knob.
 idCVar rt_light_enable(        "rt_light_enable",        "1", CVAR_RENDERER | CVAR_BOOL,
                                "upload viewLights as RTGL1 RgLight (0 = lights off)" );
-idCVar rt_light_intensity(     "rt_light_intensity",     "4000", CVAR_RENDERER | CVAR_FLOAT,
+idCVar rt_light_intensity(     "rt_light_intensity",     "400", CVAR_RENDERER | CVAR_FLOAT,
                                "base scale on imported sphere/spot light intensity; multiplied by (extent/refRadius)^sizeExponent" );
 idCVar rt_light_sizeExponent(  "rt_light_sizeExponent",  "1.8", CVAR_RENDERER | CVAR_FLOAT,
                                "scales intensity by (extent/refRadius)^exponent so larger Doom light volumes reach proportionally farther under RTGL1 1/d^2 falloff" );
@@ -143,6 +143,8 @@ idCVar rt_light_maxRadius(         "rt_light_maxRadius",         "2500", CVAR_RE
                                "skip lights with raw radius > maxRadius (0 = unlimited); keeps room-spanning lights like Hangar light_5253 (2114) while skipping sky domes (>4800)" );
 idCVar rt_light_cullFrustumBounds( "rt_light_cullFrustumBounds", "1",    CVAR_RENDERER | CVAR_BOOL,
                                "1 = skip point lights whose vertical bounding volume is completely above camera (default 1)" );
+idCVar rt_light_useBoundsAndCookie( "rt_light_useBoundsAndCookie", "1",  CVAR_RENDERER | CVAR_BOOL,
+                               "1 = pass Doom 3 OBB/frustum lightProject + 2D cookie & falloff textures via RgLightBoundsAndCookieEXT" );
 idCVar rt_sun_enable(          "rt_sun_enable",          "0", CVAR_RENDERER | CVAR_BOOL,
                                "inject one directional sun light (debug / ambient fill)" );
 idCVar rt_sun_intensity(       "rt_sun_intensity",       "0", CVAR_RENDERER | CVAR_FLOAT,

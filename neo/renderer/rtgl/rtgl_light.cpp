@@ -107,6 +107,79 @@ static RgColor4DPacked32 RTGL_LightColor( const viewLight_t *vLight ) {
     return RTGL_PackColorF( r, g, b, 1.0f );
 }
 
+// Bake a light stage's 2D texture matrix into the world-space S/T projection
+// planes (mirrors RB_BakeTextureMatrixIntoTexgen / DUDE's RB_RHI_BakeLightTextureMatrix).
+static void RTGL_BakeLightTextureMatrix( float proj[4][4], const float texMat[16] ) {
+    float genMatrix[16], fin[16];
+    genMatrix[0] = proj[0][0]; genMatrix[4] = proj[0][1]; genMatrix[8]  = proj[0][2]; genMatrix[12] = proj[0][3];
+    genMatrix[1] = proj[1][0]; genMatrix[5] = proj[1][1]; genMatrix[9]  = proj[1][2]; genMatrix[13] = proj[1][3];
+    genMatrix[2] = 0.0f;       genMatrix[6] = 0.0f;       genMatrix[10] = 0.0f;       genMatrix[14] = 0.0f;
+    genMatrix[3] = proj[2][0]; genMatrix[7] = proj[2][1]; genMatrix[11] = proj[2][2]; genMatrix[15] = proj[2][3];
+    myGlMultMatrix( genMatrix, texMat, fin );
+    proj[0][0] = fin[0]; proj[0][1] = fin[4]; proj[0][2] = fin[8]; proj[0][3] = fin[12];
+    proj[1][0] = fin[1]; proj[1][1] = fin[5]; proj[1][2] = fin[9]; proj[1][3] = fin[13];
+}
+
+// Fill RgLightBoundsAndCookieEXT from Doom 3's viewLight_t (lightProject planes +
+// 2D cookie & falloff textures, ported from DUDE's RB_RHI_SceneLightRow).
+static bool RTGL_BuildLightBoundsAndCookie( const viewLight_t *vLight,
+                                            RgLightBoundsAndCookieEXT *outExt ) {
+    memset( outExt, 0, sizeof( *outExt ) );
+    if ( !rt_light_useBoundsAndCookie.GetBool() || !vLight || !vLight->lightDef ) {
+        return false;
+    }
+    const idRenderLightLocal *ld = vLight->lightDef;
+    if ( ld->parms.parallel ) {
+        return false;
+    }
+
+    outExt->sType = RG_STRUCTURE_TYPE_LIGHT_BOUNDS_AND_COOKIE_EXT;
+    outExt->pNext = NULL;
+    outExt->flags = 1u | ( ld->parms.pointLight ? 0u : 2u );
+
+    for ( int r = 0; r < 4; r++ ) {
+        outExt->lightProject[r][0] = ld->lightProject[r][0];
+        outExt->lightProject[r][1] = ld->lightProject[r][1];
+        outExt->lightProject[r][2] = ld->lightProject[r][2];
+        outExt->lightProject[r][3] = ld->lightProject[r][3];
+    }
+
+    const idMaterial *ls = vLight->lightShader;
+    const float *cregs = vLight->shaderRegisters;
+    if ( ls ) {
+        const shaderStage_t *liveStage = NULL;
+        for ( int s = 0; s < ls->GetNumStages(); s++ ) {
+            const shaderStage_t *st = ls->GetStage( s );
+            if ( !st ) { continue; }
+            if ( cregs && st->conditionRegister >= 0 && cregs[ st->conditionRegister ] == 0.0f ) {
+                continue;
+            }
+            liveStage = st;
+            break;
+        }
+        if ( liveStage && liveStage->texture.image && liveStage->texture.image->type == TT_2D &&
+             liveStage->texture.cinematic == NULL ) {
+            outExt->pCookieTextureName = RTGL_LightTexture( liveStage->texture.image );
+            const textureRepeat_t wrap = liveStage->texture.image->repeat;
+            const bool zeroClamped = ( wrap == TR_CLAMP_TO_ZERO ||
+                                       wrap == TR_CLAMP_TO_ZERO_ALPHA ||
+                                       wrap == TR_CLAMP_TO_BORDER );
+            if ( outExt->pCookieTextureName && liveStage->texture.hasMatrix && cregs && zeroClamped ) {
+                float texMat[16];
+                RB_GetShaderTextureMatrix( cregs, &liveStage->texture, texMat );
+                RTGL_BakeLightTextureMatrix( outExt->lightProject, texMat );
+            }
+        }
+    }
+
+    const idImage *falloffImg = vLight->falloffImage ? vLight->falloffImage : ld->falloffImage;
+    if ( falloffImg && falloffImg->type == TT_2D ) {
+        outExt->pFalloffTextureName = RTGL_LightTexture( falloffImg );
+    }
+
+    return true;
+}
+
 static bool RTGL_SeenLightID( uint64_t id ) {
     for ( int i = 0; i < s_lightIDs.Num(); i++ ) {
         if ( s_lightIDs[i] == id ) { return true; }
@@ -542,10 +615,13 @@ static void RTGL_UploadOneLight( const viewLight_t *vLight, const idVec3 &camPos
         if ( outerDeg <= 0.0f ) { outerDeg = 45.0f; }
         float outer = outerDeg * ( 3.14159265358979323846f / 180.0f );
 
+        RgLightBoundsAndCookieEXT bcExt;
+        const bool hasBC = RTGL_BuildLightBoundsAndCookie( vLight, &bcExt );
+
         RgLightSpotEXT s;
         memset( &s, 0, sizeof( s ) );
         s.sType = RG_STRUCTURE_TYPE_LIGHT_SPOT_EXT;
-        s.pNext = NULL;
+        s.pNext = hasBC ? &bcExt : NULL;
         s.color = color;
         s.intensity = intensity;
         s.position = RTGL_V3( pos.x, pos.y, pos.z );
@@ -563,10 +639,13 @@ static void RTGL_UploadOneLight( const viewLight_t *vLight, const idVec3 &camPos
         float radius = rawRadius * radiusScale;
         vizRadius = radius;
 
+        RgLightBoundsAndCookieEXT bcExt;
+        const bool hasBC = RTGL_BuildLightBoundsAndCookie( vLight, &bcExt );
+
         RgLightSphericalEXT sph;
         memset( &sph, 0, sizeof( sph ) );
         sph.sType = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT;
-        sph.pNext = NULL;
+        sph.pNext = hasBC ? &bcExt : NULL;
         sph.color = color;
         sph.intensity = intensity;
         sph.position = RTGL_V3( pos.x, pos.y, pos.z );

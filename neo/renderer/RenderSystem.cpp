@@ -956,6 +956,29 @@ void idRenderSystemLocal::CaptureRenderToFile( const char *fileName, bool fixAlp
 		return;
 	}
 
+#ifdef D3_RTGL
+	// In RTGL mode, OpenGL backbuffer is never rendered into, and calling
+	// R_IssueRenderCommands() outside BeginFrame/EndFrame (e.g. during
+	// idSessionLocal::SaveGame autosave right after the mars_city1 opening
+	// cutscene) would clear the command chain or call qglReadPixels on an
+	// unrendered GL buffer. Write a tiny valid 16x16 dark TGA placeholder
+	// instead so savegame/objective thumbnails succeed instantly without
+	// stalling or corrupting the RTGL frame state.
+	if ( RTGL_IsActive() ) {
+		R_ClearCommandChain();
+		const int w = 16, h = 16;
+		byte data[ w * h * 4 ];
+		for ( int i = 0; i < w * h; i++ ) {
+			data[ i * 4 + 0 ] = 16;
+			data[ i * 4 + 1 ] = 20;
+			data[ i * 4 + 2 ] = 24;
+			data[ i * 4 + 3 ] = 0xff;
+		}
+		R_WriteTGA( fileName, data, w, h, true );
+		return;
+	}
+#endif
+
 	renderCrop_t *rc = &renderCrops[currentRenderCrop];
 
 	guiModel->EmitFullScreen();
