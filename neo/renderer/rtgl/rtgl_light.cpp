@@ -138,10 +138,10 @@ static bool RTGL_BuildLightBoundsAndCookie( const viewLight_t *vLight,
     outExt->flags = 1u | ( ld->parms.pointLight ? 0u : 2u );
 
     for ( int r = 0; r < 4; r++ ) {
-        outExt->lightProject[r][0] = ld->lightProject[r][0];
-        outExt->lightProject[r][1] = ld->lightProject[r][1];
-        outExt->lightProject[r][2] = ld->lightProject[r][2];
-        outExt->lightProject[r][3] = ld->lightProject[r][3];
+        outExt->lightProject[r][0] = vLight->lightProject[r][0];
+        outExt->lightProject[r][1] = vLight->lightProject[r][1];
+        outExt->lightProject[r][2] = vLight->lightProject[r][2];
+        outExt->lightProject[r][3] = vLight->lightProject[r][3];
     }
 
     const idMaterial *ls = vLight->lightShader;
@@ -490,6 +490,9 @@ static void RTGL_UploadOneLight( const viewLight_t *vLight, const idVec3 &camPos
                 pos = p.origin + ofs * maxOfs;
             }
         }
+    } else if ( !p.pointLight ) {
+        // Projected/spot lights (e.g. player's flashlight) always emit from p.origin
+        pos = p.origin;
     }
 
     // Compute raw Doom-unit radius for filtering and bounds checking
@@ -609,19 +612,26 @@ static void RTGL_UploadOneLight( const viewLight_t *vLight, const idVec3 &camPos
 
     } else if ( !p.pointLight ) {
         // Projected / cookie light -> RgLightSpotEXT.
-        // Direction = normalize(target - origin) (all relative to origin, so
-        // target itself is the direction). Cone from lightProject[2] normal
-        // when available.
-        idVec3 dir = p.target;
+        // The exact world-space projection direction is given by vLight->lightProject[2].Normal()
+        // (which is already transformed by the light's world orientation matrix).
+        idVec3 dir = vLight->lightProject[2].Normal();
         if ( dir.Length() < 0.001f ) {
-            dir = vLight->lightProject[2].Normal();
-            dir = -dir;
+            dir = p.axis * p.target;
         }
         if ( dir.Length() < 0.001f ) { dir.Set( 0.0f, 0.0f, -1.0f ); }
         dir.Normalize();
 
-        float radius = rawRadius * radiusScale;
-        vizRadius = radius;
+        // Offset the emission point slightly forward along the projection direction (+12 Doom units)
+        // so it clears the flashlight lens and weapon barrel geometry completely.
+        idVec3 emitterPos = pos + dir * 12.0f;
+
+        // CRITICAL: RTGL1's GLSL decodeAsSpotLight() has `l.radius = 0.05` HARDCODED.
+        // In EncodeAsSpotLight(), intensity is divided by (PI * radius * radius).
+        // If we passed radius = 32.0f, intensity was divided by 32^2 while the shader
+        // evaluated solid angle with 0.05^2, resulting in a 409,600x energy loss!
+        // We MUST pass s.radius = 0.05f to match GZDoom-RT and preserve full physical irradiance.
+        const float spotRadius = 0.05f;
+        vizRadius = spotRadius;
 
         float outerDeg = rt_light_spotAngle.GetFloat();
         if ( outerDeg <= 0.0f ) { outerDeg = 45.0f; }
@@ -636,15 +646,15 @@ static void RTGL_UploadOneLight( const viewLight_t *vLight, const idVec3 &camPos
         s.pNext = hasBC ? &bcExt : NULL;
         s.color = color;
         s.intensity = intensity;
-        s.position = RTGL_V3( pos.x, pos.y, pos.z );
+        s.position = RTGL_V3( emitterPos.x, emitterPos.y, emitterPos.z );
         s.direction = RTGL_V3( dir.x, dir.y, dir.z );
-        s.radius = radius;
+        s.radius = spotRadius;
         s.angleOuter = outer;
         s.angleInner = outer * 0.6f; // soft penumbra
         base.pNext = &s;
         r = rg.rgUploadLight( &base );
         if ( r == RG_RESULT_SUCCESS ) { g_rtglStats.spotLights++; }
-        RTGL_DumpLight( uid, "SPOT", pos, radius, intensity, color, true, dir, outerDeg * 0.6f, outerDeg, r == RG_RESULT_SUCCESS ? "ok" : "UPLOAD_FAIL" );
+        RTGL_DumpLight( uid, "SPOT", emitterPos, spotRadius, intensity, color, true, dir, outerDeg * 0.6f, outerDeg, r == RG_RESULT_SUCCESS ? "ok" : "UPLOAD_FAIL" );
 
     } else {
         // Omni point light -> RgLightSphericalEXT.

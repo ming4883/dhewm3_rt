@@ -126,6 +126,16 @@ static void RTGL_SubmitSurf( const drawSurf_t *surf, int ordinal,
         g_rtglStats.skippedSurfs++; return;
     }
 
+    // Drop 2004 legacy polygonal flashlight beam quads (`models/items/flashlight/beam1`
+    // and `beam2`). In Doom 3 these were flat billboard quads designed for two-pass
+    // destination-alpha masking with dust.tga. In RTGL1 path tracing they render as
+    // giant opaque/glowing white sheets covering half the screen, while real 3D
+    // spotlight volumetrics and cookie lighting replace them.
+    if ( idStr::FindText( surf->material->GetName(), "flashlight/beam", false ) >= 0 ) {
+        g_rtglStats.skippedSurfs++;
+        return;
+    }
+
     // P3: decal skip mode (rt_decal_mode == 2): guaranteed removal of the
     // transparent/bright decal quads, as a clean fallback / comparison.
     if ( rt_decal_mode.GetInteger() == 2 && RTGL_IsDecal( surf->material ) ) {
@@ -458,6 +468,9 @@ static void RTGL_SubmitSurf( const drawSurf_t *surf, int ordinal,
     mesh.sType = RG_STRUCTURE_TYPE_MESH_INFO;
     mesh.pNext = NULL;
     mesh.flags = 0;
+    if ( space && space->weaponDepthHack ) {
+        mesh.flags |= RG_MESH_FIRST_PERSON;
+    }
     mesh.uniqueObjectID = objectID;
     mesh.pMeshName = NULL;
     RTGL_IdentityTransform( &mesh.transform );

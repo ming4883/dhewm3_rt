@@ -724,11 +724,12 @@ void RTGL_ClassifyMaterial( const idMaterial *mat,
                 if ( isPureEffect ) {
                     flags |= RG_MESH_PRIMITIVE_TRANSLUCENT;
                     flags |= RG_MESH_PRIMITIVE_NO_SHADOW;
-                    if ( rt_emissive_enable.GetBool() ) {
-                        emissive = 1.0f * rt_emissive_mult.GetFloat();
-                    } else if ( emissive <= 0.0f ) {
-                        emissive = 1e-4f;
-                    }
+                    // Pure additive effects (flares, sprites, smoke) only need a tiny
+                    // epsilon emissive to select PipelineStateFlagBits::ADDITIVE in
+                    // RTGL1's rasterizer. Giving them full surface emissive (rt_emissive_mult)
+                    // writes huge values to outScreenEmission and blows them out into
+                    // opaque white blocks via bloom / tonemapping.
+                    emissive = 1e-4f;
                 } else {
                     if ( rt_emissive_enable.GetBool() ) {
                         emissive = 1.0f * rt_emissive_mult.GetFloat();
