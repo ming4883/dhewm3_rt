@@ -66,7 +66,7 @@ idCVar rt_decal_mode(           "rt_decal_mode",           "1", CVAR_RENDERER | 
                                 "multiply-blend decals: 0 legacy, 1 baked-alpha cutout (default), 2 skip, 3 DECAL overlay; bakes coverage alpha from RGB (decal TGAs have no alpha)" );
 idCVar rt_emissive_enable(      "rt_emissive_enable",      "1", CVAR_RENDERER | CVAR_BOOL,
                                 "1 = enable mesh light emission from blend-add surfaces (0 = disable); scale via rt_emissive_mult; 2026-11-14 restored" );
-idCVar rt_emissive_mult(        "rt_emissive_mult",        "0.35", CVAR_RENDERER | CVAR_FLOAT,
+idCVar rt_emissive_mult(        "rt_emissive_mult",        "1.0", CVAR_RENDERER | CVAR_FLOAT,
                                 "multiplier on surface emission when enabled (renders glowing fixture bulbs in screenEmission)" );
 idCVar rt_normalmap_enable(    "rt_normalmap_enable",    "1", CVAR_RENDERER | CVAR_BOOL,
                                 "1 = bind the material bump stage as an in-memory tangent-space normal map (Plan B); 0 = off" );
@@ -115,7 +115,7 @@ idCVar rt_pbr_metallicScale(    "rt_pbr_metallicScale",    "1.0",  CVAR_RENDERER
 // Kept as an OFF-by-default experiment knob.
 idCVar rt_light_enable(        "rt_light_enable",        "1", CVAR_RENDERER | CVAR_BOOL,
                                "upload viewLights as RTGL1 RgLight (0 = lights off)" );
-idCVar rt_light_intensity(     "rt_light_intensity",     "400", CVAR_RENDERER | CVAR_FLOAT,
+idCVar rt_light_intensity(     "rt_light_intensity",     "4000", CVAR_RENDERER | CVAR_FLOAT,
                                "base scale on imported sphere/spot light intensity; multiplied by (extent/refRadius)^sizeExponent" );
 idCVar rt_light_sizeExponent(  "rt_light_sizeExponent",  "1.8", CVAR_RENDERER | CVAR_FLOAT,
                                "scales intensity by (extent/refRadius)^exponent so larger Doom light volumes reach proportionally farther under RTGL1 1/d^2 falloff" );
@@ -137,12 +137,14 @@ idCVar rt_light_skipBlend(     "rt_light_skipBlend",     "1", CVAR_RENDERER | CV
                                "skip blend lights (subtractive, no RTGL1 equivalent)" );
 idCVar rt_light_skipNoShadows( "rt_light_skipNoShadows", "0", CVAR_RENDERER | CVAR_BOOL,
                                "skip noShadow lights (kept by default; RTGL1 shadows are physical)" );
-idCVar rt_light_skipNoInteractions( "rt_light_skipNoInteractions", "1", CVAR_RENDERER | CVAR_BOOL,
-                               "1 = skip lights with no visible surface interactions (mirrors R_RemoveUnecessaryViewLights)" );
-idCVar rt_light_maxRadius(         "rt_light_maxRadius",         "2500", CVAR_RENDERER | CVAR_FLOAT,
-                               "skip lights with raw radius > maxRadius (0 = unlimited); keeps room-spanning lights like Hangar light_5253 (2114) while skipping sky domes (>4800)" );
-idCVar rt_light_cullFrustumBounds( "rt_light_cullFrustumBounds", "1",    CVAR_RENDERER | CVAR_BOOL,
-                               "1 = skip point lights whose vertical bounding volume is completely above camera (default 1)" );
+idCVar rt_light_skipSkyLights( "rt_light_skipSkyLights", "1", CVAR_RENDERER | CVAR_BOOL,
+                               "skip fake ambient sky point lights (e.g. lights/*sky*); RTGL1 uses physical skybox lighting" );
+idCVar rt_light_skipNoInteractions( "rt_light_skipNoInteractions", "0", CVAR_RENDERER | CVAR_BOOL,
+                               "0 = keep lights without visible surface interactions (default 0; avoids light popping on view rotation)" );
+idCVar rt_light_maxRadius(         "rt_light_maxRadius",         "3500", CVAR_RENDERER | CVAR_FLOAT,
+                               "skip lights with raw radius > maxRadius (0 = unlimited, default 3500; keeps large room/hangar fill lights while skipping sky domes >4800)" );
+idCVar rt_light_cullFrustumBounds( "rt_light_cullFrustumBounds", "0",    CVAR_RENDERER | CVAR_BOOL,
+                               "0 = off, let GPU OBB bounds handle volume clipping (default 0; 1 incorrectly culls high ceiling lights)" );
 idCVar rt_light_useBoundsAndCookie( "rt_light_useBoundsAndCookie", "1",  CVAR_RENDERER | CVAR_BOOL,
                                "1 = pass Doom 3 OBB/frustum lightProject + 2D cookie & falloff textures via RgLightBoundsAndCookieEXT" );
 idCVar rt_sun_enable(          "rt_sun_enable",          "0", CVAR_RENDERER | CVAR_BOOL,
@@ -155,7 +157,7 @@ idCVar rt_sun_dirZ(            "rt_sun_dirZ",            "-1.0", CVAR_RENDERER |
 idCVar rt_sky_colorR(          "rt_sky_colorR",          "0.10", CVAR_RENDERER | CVAR_FLOAT, "sky color R (linear)" );
 idCVar rt_sky_colorG(          "rt_sky_colorG",          "0.12", CVAR_RENDERER | CVAR_FLOAT, "sky color G (linear)" );
 idCVar rt_sky_colorB(          "rt_sky_colorB",          "0.16", CVAR_RENDERER | CVAR_FLOAT, "sky color B (linear)" );
-idCVar rt_sky_brightness(      "rt_sky_brightness",      "0.5", CVAR_RENDERER | CVAR_FLOAT,
+idCVar rt_sky_brightness(      "rt_sky_brightness",      "1.0", CVAR_RENDERER | CVAR_FLOAT,
                                "skyColorMultiplier (visible backdrop brightness)" );
 idCVar rt_sky_light(           "rt_sky_light",           "2.0", CVAR_RENDERER | CVAR_FLOAT,
                                "skyLightMultiplier (indirect/ambient fill)" );
@@ -383,6 +385,7 @@ bool RTGL_Init( void ) {
 void RTGL_Shutdown( void ) {
     if ( !rgActive ) return;
     RTGL_MaterialShutdown();
+    RTGL_SkyShutdown();
     if ( rg.rgDestroyInstance ) rg.rgDestroyInstance();
     if ( rgDll ) FreeLibrary( rgDll );
     rg = kZeroRg;
@@ -502,8 +505,8 @@ void RTGL_EndFrame( void ) {
     texParams.pNext = &tnmp;
     texParams.dynamicSamplerFilter = RG_SAMPLER_FILTER_LINEAR;
     texParams.normalMapStrength = 1.0f;
-    texParams.emissionMapBoost = 15.0f;
-    texParams.emissionMaxScreenColor = 1.5f;
+    texParams.emissionMapBoost = rt_emissive_enable.GetBool() ? 2.0f : 0.0f;
+    texParams.emissionMaxScreenColor = rt_emissive_enable.GetBool() ? 1.5f : 0.0f;
     texParams.minRoughness = 0.0f;
     texParams.heightMapDepth = 0.02f;
     texParams.clampDirect = 500.0f;

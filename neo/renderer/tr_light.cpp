@@ -36,6 +36,10 @@ If you have questions concerning this license or the applicable additional terms
 #include "renderer/tr_local.h"
 
 #include "Model_local.h"
+#ifdef D3_RTGL
+#include "renderer/rtgl/rtgl_main.h"
+#include "renderer/rtgl/rtgl_internal.h"
+#endif
 
 
 static const float CHECK_BOUNDS_EPSILON = 1.0f;
@@ -1423,7 +1427,17 @@ static void R_AddAmbientDrawsurfs( viewEntity_t *vEntity ) {
 			}
 		}
 
+#ifdef D3_RTGL
+		bool isCulled = R_CullLocalBox( tri->bounds, vEntity->modelMatrix, 5, tr.viewDef->frustum );
+		if ( isCulled && RTGL_IsActive() && RTGL_IsSkySurface( shader ) ) {
+			// Sky surfaces in active areas must not be frustum-culled: path-traced
+			// skylights illuminate the room even when above, behind, or beside the camera.
+			isCulled = false;
+		}
+		if ( !isCulled ) {
+#else
 		if ( !R_CullLocalBox( tri->bounds, vEntity->modelMatrix, 5, tr.viewDef->frustum ) ) {
+#endif
 
 			def->visibleCount = tr.viewCount;
 

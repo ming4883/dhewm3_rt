@@ -81,6 +81,7 @@ void         RTGL_SubmitLights( const void *cmdHead );       // walk viewLights,
 void         RTGL_SubmitUI( const void *cmdHead );           // P-UI: 2D GUI views -> swapchained overlay primitives
 void         RTGL_SubmitWorldGuis( const void *cmdHead );    // P-UI: 3D-view SS_GUI quads -> world-space swapchain overlays
 void         RTGL_SkyBeginFrame( void );
+void         RTGL_SkyShutdown( void );
 void         RTGL_ObserveSkySurface( const drawSurf_t *surf, float floatTime );
 void         RTGL_SubmitSkyGeometry( void );
 void         RTGL_BuildSkyParams( RgDrawFrameSkyParams *sky );

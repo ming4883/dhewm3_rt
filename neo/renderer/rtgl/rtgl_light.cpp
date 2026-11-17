@@ -412,6 +412,18 @@ static void RTGL_UploadOneLight( const viewLight_t *vLight, const idVec3 &camPos
     if ( mat && mat->IsBlendLight() && rt_light_skipBlend.GetBool() ) {
         g_rtglStats.skippedLights++; g_rtglStats.skippedBlend++; return;
     }
+    if ( mat && rt_light_skipSkyLights.GetBool() ) {
+        // Skip fake ambient sky lights (e.g. lights/squarelight1sky). In original
+        // Doom 3, mappers placed huge point lights with `lights/*sky*` shaders
+        // to approximate outdoor sky fill without an environment cubemap or GI.
+        // In RTGL1, physical sky illumination is already evaluated from the skybox
+        // cubemap; uploading these fake omni lights double-counts sky energy and
+        // causes violent lighting pops when portal/frustum culling toggles them
+        // on and off near windows (such as light_4874 outside the mars_city1 kitchen).
+        if ( idStr::FindText( mat->GetName(), "sky", false ) >= 0 ) {
+            g_rtglStats.skippedLights++; return;
+        }
+    }
     if ( p.noShadows && rt_light_skipNoShadows.GetBool() ) {
         g_rtglStats.skippedLights++; g_rtglStats.skippedNoShadow++; return;
     }

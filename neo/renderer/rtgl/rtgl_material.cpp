@@ -110,6 +110,52 @@ static const char * RTGL_NormalMapName( const idMaterial *mat ) {
     return img->imgName.c_str();
 }
 
+// Return the 2D additive glow mask (`blend add`, e.g. `*_add.tga`) for an
+// opaque/alpha-tested lit material when `rt_emissive_enable` is on and the
+// stage evaluates to non-zero RGB in `shaderRegisters`. Binding this mask to
+// RTGL1's `TEXTURE_EMISSIVE_INDEX` ("_e") ensures only the small indicator LEDs
+// or light strips glow instead of the entire diffuse surface (`h.albedo`).
+static const char * RTGL_EmissiveMapName( const idMaterial *mat, const float *shaderRegisters ) {
+    if ( !rt_emissive_enable.GetBool() || !mat ) { return NULL; }
+    materialCoverage_t cov = mat->Coverage();
+    const bool isPureEffect =
+        ( cov == MC_TRANSLUCENT ) ||
+        ( mat->Deform() != DFRM_NONE && mat->Deform() != DFRM_EYEBALL ) ||
+        ( !mat->ReceivesLighting() );
+    if ( isPureEffect ) { return NULL; }
+
+    const int numRegs = mat->GetNumRegisters();
+    for ( int i = 0; i < mat->GetNumStages(); i++ ) {
+        const shaderStage_t *stage = mat->GetStage( i );
+        if ( !stage || stage->lighting != SL_AMBIENT ) { continue; }
+        if ( stage->hasAlphaTest ) { continue; }
+        int src = stage->drawStateBits & GLS_SRCBLEND_BITS;
+        int dst = stage->drawStateBits & GLS_DSTBLEND_BITS;
+        if ( dst != GLS_DSTBLEND_ONE || src == GLS_SRCBLEND_ZERO ) { continue; }
+        if ( shaderRegisters && stage->conditionRegister >= 0 &&
+             stage->conditionRegister < numRegs &&
+             shaderRegisters[ stage->conditionRegister ] == 0.0f ) {
+            continue;
+        }
+        if ( shaderRegisters ) {
+            int r0 = stage->color.registers[0];
+            int r1 = stage->color.registers[1];
+            int r2 = stage->color.registers[2];
+            float cr = ( r0 >= 0 && r0 < numRegs ) ? shaderRegisters[r0] : 1.0f;
+            float cg = ( r1 >= 0 && r1 < numRegs ) ? shaderRegisters[r1] : 1.0f;
+            float cb = ( r2 >= 0 && r2 < numRegs ) ? shaderRegisters[r2] : 1.0f;
+            if ( cr <= 0.0f && cg <= 0.0f && cb <= 0.0f ) {
+                continue;
+            }
+        }
+        const idImage *img = stage->texture.image;
+        if ( img && img->type == TT_2D && img->imgName.Length() > 0 && img->imgName[0] != '_' ) {
+            return img->imgName.c_str();
+        }
+    }
+    return NULL;
+}
+
 // Classify a material by its BLEND drawStateBits / translucent-diffuse decal
 // pattern. Returns the decal blend type:
 //   0 = not a decal
@@ -289,7 +335,7 @@ static int RTGL_DecalBakeMode( const idMaterial *mat ) {
 // Load `loadName`'s RGBA, optionally bake a coverage alpha from RGB, and hand
 // it to RTGL1 under `provideName`. Names are cached (s_provided) so each key is
 // uploaded once per session.
-static void RTGL_ProvideTexture( const char *loadName, const char *provideName, int bakeMode, const char *normalLoadName, bool clamp = false ) {
+static void RTGL_ProvideTexture( const char *loadName, const char *provideName, int bakeMode, const char *normalLoadName, bool clamp = false, const char *emissiveLoadName = NULL ) {
     if ( !loadName || !loadName[0] || !provideName || !provideName[0] ) { return; }
     if ( RTGL_WasProvided( provideName ) ) { return; }
     if ( !rg.rgProvideOriginalTexture ) { return; }
@@ -445,17 +491,37 @@ static void RTGL_ProvideTexture( const char *loadName, const char *provideName, 
         }
     }
 
+    byte *emisPic = NULL;
+    int emisW = 0, emisH = 0;
+    ID_TIME_T emisTimestamp = 0;
+    textureDepth_t emisDepth = TD_DEFAULT;
+    if ( emissiveLoadName && emissiveLoadName[0] ) {
+        R_LoadImageProgram( emissiveLoadName, &emisPic, &emisW, &emisH, &emisTimestamp, &emisDepth );
+        if ( !emisPic || emisW <= 0 || emisH <= 0 ) {
+            if ( emisPic ) { R_StaticFree( emisPic ); }
+            emisPic = NULL;
+        }
+    }
+
+    RgOriginalTextureEmissiveMapEXT emisExt = {};
+    if ( emisPic ) {
+        emisExt.sType = RG_STRUCTURE_TYPE_ORIGINAL_TEXTURE_EMISSIVE_MAP_EXT;
+        emisExt.pNext = NULL;
+        emisExt.pPixels = emisPic;
+        emisExt.size = RTGL_Ext( (uint32_t)emisW, (uint32_t)emisH );
+    }
+
     RgOriginalTextureNormalMapEXT nrm = {};
     if ( nrmPic ) {
         nrm.sType = RG_STRUCTURE_TYPE_ORIGINAL_TEXTURE_NORMAL_MAP_EXT;
-        nrm.pNext = NULL;
+        nrm.pNext = emisPic ? (void *)&emisExt : NULL;
         nrm.pPixels = nrmPic;
         nrm.size = RTGL_Ext( (uint32_t)nrmW, (uint32_t)nrmH );
     }
 
     RgOriginalTextureInfo info = {};
     info.sType = RG_STRUCTURE_TYPE_ORIGINAL_TEXTURE_INFO;
-    info.pNext = nrmPic ? &nrm : NULL;
+    info.pNext = nrmPic ? (void *)&nrm : ( emisPic ? (void *)&emisExt : NULL );
     info.pTextureName = provideName;
     info.pPixels = pic;
     info.size = RTGL_Ext( (uint32_t)width, (uint32_t)height );
@@ -466,6 +532,7 @@ static void RTGL_ProvideTexture( const char *loadName, const char *provideName, 
     RgResult r = rg.rgProvideOriginalTexture( &info );
     R_StaticFree( pic );
     if ( nrmPic ) { R_StaticFree( nrmPic ); }
+    if ( emisPic ) { R_StaticFree( emisPic ); }
 
     if ( r == RG_RESULT_SUCCESS || r == RG_RESULT_SUCCESS_FOUND_TEXTURE ) {
         s_provided.Append( idStr( provideName ) );
@@ -513,15 +580,21 @@ const char * RTGL_PrimaryTexture( const idMaterial *mat, const float *shaderRegi
     const char *name = chosen->imgName.c_str();
     if ( name[0] == '_' && idStr::Icmp( name, "_quadratic" ) != 0 ) { return NULL; }
 
-    const char *nrmName = RTGL_NormalMapName( mat );
+    const char *nrmName  = RTGL_NormalMapName( mat );
+    const char *emisName = RTGL_EmissiveMapName( mat, shaderRegisters );
     const bool clamp = RTGL_IsEyeRasterMaterial( mat ) || ( chosen->repeat != TR_REPEAT );
     int bake = RTGL_DecalBakeMode( mat );
-    if ( bake != 0 ) {
-        const char *derived = RTGL_DerivedName( name, bake );
-        RTGL_ProvideTexture( name, derived, bake, nrmName, clamp );
+    if ( emisName != NULL ) {
+        const char *derived = RTGL_DerivedName( name, 20 + bake );
+        RTGL_ProvideTexture( name, derived, bake, nrmName, clamp, emisName );
         return derived;
     }
-    RTGL_ProvideTexture( name, name, 0, nrmName, clamp );
+    if ( bake != 0 ) {
+        const char *derived = RTGL_DerivedName( name, bake );
+        RTGL_ProvideTexture( name, derived, bake, nrmName, clamp, NULL );
+        return derived;
+    }
+    RTGL_ProvideTexture( name, name, 0, nrmName, clamp, NULL );
     return name;
 }
 
@@ -662,7 +735,9 @@ void RTGL_ClassifyMaterial( const idMaterial *mat,
                     } else {
                         emissive = 0.0f;
                     }
-                    flags |= RG_MESH_PRIMITIVE_NO_SHADOW;
+                    if ( idStr::Cmpn( mat->GetName(), "textures/base_light/", 20 ) == 0 ) {
+                        flags |= RG_MESH_PRIMITIVE_NO_SHADOW;
+                    }
                 }
             }
         }

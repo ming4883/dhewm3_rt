@@ -400,33 +400,50 @@ static void RTGL_SubmitSurf( const drawSurf_t *surf, int ordinal,
     primFlags |= RG_MESH_PRIMITIVE_DONT_GENERATE_NORMALS;
     const char *texName = RTGL_PrimaryTexture( surf->material, sregs );
 
-    // For opaque light-fixture surfaces (e.g. `striplight3`, `bluetex4a_ed`)
-    // that have both a diffusemap stage and a `blend add` glow stage with
-    // `red Parm0; green Parm1; blue Parm2`, evaluate the additive stage's
-    // color registers when `emissive > 0` so the fixture's screen-space glow
-    // reflects the entity's light color instead of plain grey diffuse.
-    if ( !isEffectSurf && emissive > 0.0f && sregs ) {
+    // For opaque/alpha-tested surfaces with a `blend add` glow stage, evaluate
+    // the additive stage's conditionRegister and RGB registers against `sregs`:
+    //   1) If the stage is disabled or its RGB is 0 (e.g. switched-off light
+    //      fixture or unpowered panel), or it has no 2D `_add` mask texture,
+    //      force `emissive = 0.0f` so HitInfo.inl never falls back to making the
+    //      entire diffuse surface (`h.albedo * tr.emissiveMult`) glow.
+    //   2) Otherwise scale `emissive` by the stage's peak RGB channel, while
+    //      keeping `stageColorPacked` (diffuse albedo) untouched.
+    if ( !isEffectSurf && emissive > 0.0f ) {
+        float activeGlow = 0.0f;
+        const int numRegs = surf->material->GetNumRegisters();
         for ( int s = 0; s < surf->material->GetNumStages(); s++ ) {
             const shaderStage_t *st = surf->material->GetStage( s );
-            if ( !st || st->lighting != SL_AMBIENT ) { continue; }
-            if ( st->conditionRegister >= 0 && sregs[ st->conditionRegister ] == 0.0f ) {
+            if ( !st || st->lighting != SL_AMBIENT || st->hasAlphaTest ) { continue; }
+            if ( sregs && st->conditionRegister >= 0 && st->conditionRegister < numRegs &&
+                 sregs[ st->conditionRegister ] == 0.0f ) {
                 continue;
             }
             int dstB = st->drawStateBits & GLS_DSTBLEND_BITS;
             int srcB = st->drawStateBits & GLS_SRCBLEND_BITS;
-            if ( dstB == GLS_DSTBLEND_ONE && srcB != GLS_SRCBLEND_ZERO ) {
-                float cr = sregs[ st->color.registers[0] ];
-                float cg = sregs[ st->color.registers[1] ];
-                float cb = sregs[ st->color.registers[2] ];
-                if ( cr < 0.0f ) { cr = 0.0f; } else if ( cr > 1.0f ) { cr = 1.0f; }
-                if ( cg < 0.0f ) { cg = 0.0f; } else if ( cg > 1.0f ) { cg = 1.0f; }
-                if ( cb < 0.0f ) { cb = 0.0f; } else if ( cb > 1.0f ) { cb = 1.0f; }
-                // Blend 50% neutral white (for diffuse albedo) with 50% fixture tint
-                stageColorPacked = RTGL_PackColorF( 0.5f + 0.5f * cr,
-                                                    0.5f + 0.5f * cg,
-                                                    0.5f + 0.5f * cb, 1.0f );
-                break;
+            if ( dstB == GLS_DSTBLEND_ONE && srcB != GLS_SRCBLEND_ZERO &&
+                 st->texture.image && st->texture.image->type == TT_2D &&
+                 st->texture.image->imgName.Length() > 0 &&
+                 st->texture.image->imgName[0] != '_' ) {
+                float cr = 1.0f, cg = 1.0f, cb = 1.0f;
+                if ( sregs ) {
+                    int r0 = st->color.registers[0];
+                    int r1 = st->color.registers[1];
+                    int r2 = st->color.registers[2];
+                    if ( r0 >= 0 && r0 < numRegs ) { cr = sregs[r0]; }
+                    if ( r1 >= 0 && r1 < numRegs ) { cg = sregs[r1]; }
+                    if ( r2 >= 0 && r2 < numRegs ) { cb = sregs[r2]; }
+                }
+                float maxC = cr;
+                if ( cg > maxC ) { maxC = cg; }
+                if ( cb > maxC ) { maxC = cb; }
+                if ( maxC > activeGlow ) { activeGlow = maxC; }
             }
+        }
+        if ( activeGlow <= 0.0f ) {
+            emissive = 0.0f;
+        } else {
+            if ( activeGlow > 1.0f ) { activeGlow = 1.0f; }
+            emissive *= activeGlow;
         }
     }
 

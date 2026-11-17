@@ -50,6 +50,11 @@ void RTGL_SkyBeginFrame( void ) {
     s_hasRasterSky = false;
 }
 
+void RTGL_SkyShutdown( void ) {
+    s_numSkyLayers = 0;
+    s_hasRasterSky = false;
+}
+
 static void RTGL_BuildWobbleRotation( const idMaterial *mat, const float *regs,
                                       float floatTime, float outRot[3][3] ) {
     // Identity default
@@ -304,24 +309,32 @@ void RTGL_BuildSkyParams( RgDrawFrameSkyParams *sky ) {
     memset( sky, 0, sizeof( *sky ) );
     sky->sType = RG_STRUCTURE_TYPE_DRAW_FRAME_SKY_PARAMS;
     sky->pNext = NULL;
-    sky->skyType = s_hasRasterSky ? RG_SKY_TYPE_RASTERIZED_GEOMETRY : RG_SKY_TYPE_COLOR;
-    sky->skyColorDefault = RTGL_V3( rt_sky_colorR.GetFloat(),
-                                     rt_sky_colorG.GetFloat(),
-                                     rt_sky_colorB.GetFloat() );
-    // When a real Doom 3 skybox cubemap is rasterized, default to 1.0x backdrop
-    // brightness so its stage color (e.g. commoutside rgb 0.75) reproduces
-    // faithfully; keep rt_sky_brightness as a user scalar (2.0 * rt_sky_brightness
-    // maps default 0.5 -> 1.0).
-    float colorMult = rt_sky_brightness.GetFloat();
-    if ( s_hasRasterSky ) {
-        colorMult *= 2.0f;
+
+    if ( !s_hasRasterSky ) {
+        // Pure indoor area with no sky surface in active areas: shut off sky
+        // lighting completely (pure black {0,0,0}, 0.0x multiplier).
+        sky->skyType = RG_SKY_TYPE_COLOR;
+        sky->skyColorDefault = RTGL_V3( 0.0f, 0.0f, 0.0f );
+        sky->skyColorMultiplier = 0.0f;
+        sky->skyColorSaturation = 0.0f;
+        sky->skyLightMultiplier = 0.0f;
+        sky->skyLightSaturation = 0.0f;
+        sky->skyColorScale = 0.0f;
+        sky->skyLightScale = 0.0f;
+    } else {
+        sky->skyType = RG_SKY_TYPE_RASTERIZED_GEOMETRY;
+        sky->skyColorDefault = RTGL_V3( rt_sky_colorR.GetFloat(),
+                                         rt_sky_colorG.GetFloat(),
+                                         rt_sky_colorB.GetFloat() );
+        float colorMult = rt_sky_brightness.GetFloat() * 2.0f;
+        sky->skyColorMultiplier = colorMult;
+        sky->skyColorSaturation = 1.0f;
+        sky->skyLightMultiplier = rt_sky_light.GetFloat();
+        sky->skyLightSaturation = 1.0f;
+        sky->skyColorScale = 1.0f;
+        sky->skyLightScale = rt_sky_lightScale.GetFloat();
     }
-    sky->skyColorMultiplier = colorMult;
-    sky->skyColorSaturation = 1.0f;
-    sky->skyLightMultiplier = rt_sky_light.GetFloat();
-    sky->skyLightSaturation = 1.0f;
-    sky->skyColorScale = 1.0f;
-    sky->skyLightScale = rt_sky_lightScale.GetFloat();
+
     sky->skyViewerPosition = RTGL_V3( 0.0f, 0.0f, 0.0f );
     sky->pSkyCubemapTextureName = NULL;
 }

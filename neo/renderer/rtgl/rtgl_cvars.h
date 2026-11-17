@@ -49,9 +49,10 @@ extern idCVar rt_light_spotAngle;       // outer cone angle (deg) for projected/
 extern idCVar rt_light_skipFog;         // skip fog lights (no direct RgLight equivalent)
 extern idCVar rt_light_skipBlend;       // skip blend lights (subtractive, no RTGL1 equivalent)
 extern idCVar rt_light_skipNoShadows;   // skip noShadow lights (or keep as unshadowed = all RT lights are shadowed)
-extern idCVar rt_light_skipNoInteractions; // 1 = skip lights with no visible interactions (local/global/translucentInteractions)
-extern idCVar rt_light_maxRadius;          // skip lights with raw radius > maxRadius (0 = unlimited, default 2000)
-extern idCVar rt_light_cullFrustumBounds;  // 1 = skip point lights whose volume bottom is far above camera view (default 1)
+extern idCVar rt_light_skipSkyLights;   // skip fake ambient sky point lights (lights/*sky*, e.g. light_4874 outside kitchen)
+extern idCVar rt_light_skipNoInteractions; // 0 = keep lights without visible surface interactions (avoids view-edge popping)
+extern idCVar rt_light_maxRadius;          // skip lights with raw radius > maxRadius (default 3500, culls sky domes >4800)
+extern idCVar rt_light_cullFrustumBounds;  // 0 = off, let GPU OBB clipping handle light volume bounds (default 0)
 extern idCVar rt_light_useBoundsAndCookie; // 1 = pass Doom 3 OBB/frustum lightProject + cookie/falloff textures to RTGL1
 extern idCVar rt_sun_enable;            // inject one directional "sun" (debug / ambient fill)
 extern idCVar rt_sun_intensity;         // sun illuminance (lux-like)

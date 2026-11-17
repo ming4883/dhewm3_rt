@@ -32,6 +32,9 @@ If you have questions concerning this license or the applicable additional terms
 #include "renderer/RenderWorld_local.h"
 
 #include "renderer/tr_local.h"
+#ifdef D3_RTGL
+#include "renderer/rtgl/rtgl_internal.h"
+#endif
 
 /*
 ================
@@ -658,9 +661,15 @@ void idRenderWorldLocal::AddWorldModelEntities() {
 		for ( int j = 0; j < hModel->NumSurfaces(); j++ ) {
 			const modelSurface_t *surf = hModel->Surface( j );
 
+#ifdef D3_RTGL
+			if ( RTGL_IsSkySurface( surf->shader ) ) { 
+				def->needsPortalSky = true;
+			}
+#else
 			if ( ( surf->shader->GetName() ==  idStr( "textures/smf/portal_sky" ) ) || ( surf->shader->GetName() == idStr( "textures/editor/portal_sky" ) ) ) { 
 				def->needsPortalSky = true;
 			}
+#endif
 		}
 
 		def->referenceBounds = def->parms.hModel->Bounds();
