@@ -14,11 +14,23 @@ extern idCVar rt_dbg_colorMode;     // 0 normal, 1 objectID hash, 2 static/dyn, 
 extern idCVar rt_dbg_validateIDs;   // report duplicate uniqueObjectID per frame
 extern idCVar rt_dbg_stats;         // throttled per-frame submission stats
 extern idCVar rt_dbg_skipSubViews;  // skip mirror/camera/xray subviews
-extern idCVar rt_dbg_maxSurfs;      // per-frame surface budget (0 = unlimited)
+extern idCVar rt_dbg_maxSurfs;
+extern idCVar rt_dbg_dumpSurfs;
+extern idCVar rt_dbg_dumpMatFilter;      // per-frame surface budget (0 = unlimited)
 extern idCVar rt_dbg_bounds;        // reserved: rasterized AABB/normal overlay (P5)
 extern idCVar rt_dbg_dumpLights;  // per-light list every N frames (0 = off); view with win_viewlog 1
 extern idCVar rt_dbg_printRepeat; // suppress repeated RTGL1 log messages (print 1st, then every N; 0 = off)
 extern idCVar rt_dbg_lightViz; // 0 off, 1 solid sphere, 2 wireframe (A: in-scene light gizmos at true radius)
+extern idCVar rt_refr_enable;
+extern idCVar rt_refr_index;
+extern idCVar rt_refr_depth;
+extern idCVar rt_refr_waveSpeed;
+extern idCVar rt_refr_waveStrength;
+extern idCVar rt_raster_distortion;   // 1 = defer heat haze and air distortion for custom raster pass
+extern idCVar rt_dbg_disableRaster;   // DIAG: set RgDrawFrameInfo.disableRasterization (kill RTGL1 rasterizer)
+extern idCVar rt_dbg_resetHistory;    // DIAG: set RgDrawFrameInfo.resetHistory (drop temporal accumulation)
+extern idCVar rt_dbg_disableRTGeom;   // DIAG: set RgDrawFrameInfo.disableRayTracedGeometry (kill BLAS/RT geometry)
+extern idCVar rt_dbg_forceSkyColor;   // DIAG: force RG_SKY_TYPE_COLOR + magenta skyColorDefault (verify grey board == ray-miss background)
 extern idCVar rt_decal_mode;         // multiply-blend decals: 0 legacy, 1 baked-alpha cutout, 2 skip, 3 DECAL overlay
 extern idCVar rt_emissive_enable;      // 1 = enable mesh light emission from blend-add surfaces (default 1, 2026-11-14 restored)
 extern idCVar rt_emissive_mult;        // multiplier on surface emission when enabled (default 0.1)

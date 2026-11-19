@@ -24,7 +24,7 @@
 // rasterizes those directly into the swapchain image after the path-traced
 // frame (VulkanDevice.cpp DrawToSwapchain, LOAD_OP_LOAD so the 3D image is
 // preserved), with alpha blending and no depth test. This is exactly the
-// mechanism gzdoom-rt uses for its 2D/HUD layer (rt_main.cpp:4655 etc.).
+// 2D/HUD overlay mechanism (see RTGL rasterizer / HUD composite).
 //
 // IMPORTANT: this is PORT-SIDE ONLY. The swapchain rasterizer pipelines and
 // shaders (RsRasterizer.vert.spv / RsSwapchain.frag.spv) already ship inside

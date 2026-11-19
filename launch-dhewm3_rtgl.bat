@@ -30,10 +30,10 @@ REM --- retail game data (DOOM 3 v1.3.1, NOT the BFG Edition) ---
 set "GAMEDATA=C:\Program Files (x86)\Steam\steamapps\common\Doom 3"
 
 REM --- RTGL1 runtime folder: bin\RTGL1.dll, shaders\*.spv, RTGL1.json ---
-REM     Shared with gzdoom-rt; baked into the exe as r_rtgl_overridePath default.
+REM     dhewm3 private runtime (own RTGL1 build); baked into r_rtgl_overridePath.
 REM     RTGL1 resolves shaders/JSON/DLL from this absolute override folder,
 REM     NOT from CWD (VulkanDevice_Init.cpp / FolderObserver.cpp).
-set "RTGL_DIR=I:\Sandbox\gzdoom-rt\build\rt"
+set "RTGL_DIR=I:\Sandbox\dhewm3\build\rtgl-runtime"
 if defined D3RTGL_DIR set "RTGL_DIR=%D3RTGL_DIR%"
 set "RTGL_URI=%RTGL_DIR:\=/%"
 
@@ -67,7 +67,7 @@ goto :fail
 
 :nortgl
 echo [ERROR] Missing RTGL1.dll at "%RTGL_DIR%\bin\RTGL1.dll"
-echo         Edit RTGL_DIR / set D3RTGL_DIR, or rebuild gzdoom-rt's RTGL1.
+echo         Edit RTGL_DIR / set D3RTGL_DIR, or rebuild dhewm3's RTGL1 (rtgl-standalone).
 goto :fail
 
 :noshaders
@@ -125,7 +125,7 @@ REM SDL2/OpenAL/libcurl are implicit imports: loader also searches PATH.
 set "PATH=%STOCK_BIN%;%PATH%"
 REM --- D3D12 Agility SDK: DXGI present loads D3D12Core.dll from "rt\bin\"
 REM     (relative to the exe dir, exported by RG_D3D12CORE_HELPER). Mirror
-REM     gzdoom-rt: junction <exe dir>\rt -> shared runtime folder.
+REM     junction <exe dir>\rt -> dhewm3's private runtime folder.
 if not exist "%RTGL_BIN%\rt\bin\D3D12Core.dll" if exist "%RTGL_BIN%\rt" rmdir "%RTGL_BIN%\rt" 2>nul
 if not exist "%RTGL_BIN%\rt\bin\D3D12Core.dll" mklink /J "%RTGL_BIN%\rt" "%RTGL_DIR%" >nul
 REM CWD = exe dir so base.dll / d3xp.dll resolve there.

@@ -1310,16 +1310,38 @@ if(D3_RTGL)
 		renderer/rtgl/rtgl_light.cpp
 		renderer/rtgl/rtgl_sky.cpp
 		renderer/rtgl/rtgl_ui.cpp
-		libs/rtgl/RTGL1.h
+		renderer/rtgl/rtgl_heathaze.cpp
+		renderer/rtgl/rtgl_heathaze.h
+		renderer/rtgl/shaders/RsHeatHaze.vert
+		renderer/rtgl/shaders/RsHeatHaze.frag
 	)
 	# Runtime folder holding RTGL1.dll (in bin/), compiled shaders (shaders/),
-	# RTGL1.json and blue-noise ktx2. Reuse the already-built, DLL+spv-aligned
-	# gzdoom-rt runtime so we do NOT rebuild DLL/shaders (avoids layout mismatch).
-	set(D3_RTGL_RUNTIME_DIR "I:/Sandbox/gzdoom-rt/build/rt" CACHE PATH
+	# RTGL1.json and blue-noise ktx2. dhewm3 builds its own RTGL1 (doom3 branch) into rtgl-runtime; DLL and
+	# spv are produced by the same standalone build (avoids layout mismatch).
+	set(D3_RTGL_RUNTIME_DIR "I:/Sandbox/dhewm3/build/rtgl-runtime" CACHE PATH
 		"RTGL1 runtime folder (bin/RTGL1.dll, shaders/, RTGL1.json)")
 	# Generate a header with a real C string literal (avoids MSVC /D quoting).
 	file(WRITE "${CMAKE_BINARY_DIR}/rtgl_config.h"
 		"#define D3_RTGL_RUNTIME_DIR \"${D3_RTGL_RUNTIME_DIR}\"\n")
+
+	# ---- app-side heat-haze (D3_RTGL): compile shaders with RTGL's glslc ----
+	# The exe loads these spv at runtime from r_rtgl_overridePath/shaders/.
+	set(D3_RTGL_GLSLC "${CMAKE_CURRENT_SOURCE_DIR}/../RTGL/Source/VulkanSDK/1.3.280.0/Bin/glslc.exe")
+	set(D3_RTGL_HAZE_SHADER_SRC "${CMAKE_CURRENT_SOURCE_DIR}/renderer/rtgl/shaders")
+	set(D3_RTGL_HAZE_SPV_DIR "${D3_RTGL_RUNTIME_DIR}/shaders")
+	file(MAKE_DIRECTORY "${D3_RTGL_HAZE_SPV_DIR}")
+	foreach(_stage vert frag)
+		set(_haze_src "${D3_RTGL_HAZE_SHADER_SRC}/RsHeatHaze.${_stage}")
+		set(_haze_spv "${D3_RTGL_HAZE_SPV_DIR}/RsHeatHaze.${_stage}.spv")
+		add_custom_command(
+			OUTPUT "${_haze_spv}"
+			COMMAND "${D3_RTGL_GLSLC}" --target-env=vulkan1.2 "${_haze_src}" -o "${_haze_spv}"
+			DEPENDS "${_haze_src}"
+			COMMENT "Compiling app heat-haze shader RsHeatHaze.${_stage}"
+			VERBATIM)
+		list(APPEND D3_RTGL_HAZE_SPVS "${_haze_spv}")
+	endforeach()
+	add_custom_target(RtglHeatHazeShaders ALL DEPENDS ${D3_RTGL_HAZE_SPVS})
 endif()
 # ---------------------------------------------------------------------
 
@@ -1373,7 +1395,15 @@ if(CORE)
 
 	if(D3_RTGL)
 		target_sources(${DHEWM3BINARY} PRIVATE ${src_rtgl})
+		# The exe draws the heat-haze pass itself -> needs Vulkan core + headers.
+		# Plain signature to match the existing target_link_libraries(${DHEWM3BINARY} ...) below.
+		find_package(Vulkan REQUIRED)
+		target_link_libraries(${DHEWM3BINARY} Vulkan::Vulkan)
+		add_dependencies(${DHEWM3BINARY} RtglHeatHazeShaders)
 		source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} PREFIX neo FILES ${src_rtgl})
+		# Single source of truth: RTGL1.h now comes from the doom3 submodule
+		# (RTGL/Include), not a vendored copy under neo/libs/rtgl/.
+		target_include_directories(${DHEWM3BINARY} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../RTGL/Include")
 	endif()
 
 	target_include_directories(${DHEWM3BINARY} PRIVATE "${CMAKE_SOURCE_DIR}/libs/imgui")

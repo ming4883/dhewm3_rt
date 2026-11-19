@@ -101,13 +101,45 @@ static const char * RTGL_DerivedName( const char *base, int mode ) {
 // already resolved to a tangent-space normal map by R_LoadImageProgram
 // (R_HeightmapToNormalMap): RGBA8 with RGB = XYZ normal, A = height -- the
 // exact layout RTGL1's "_n" slot samples in HitInfo.inl.
-static const char * RTGL_NormalMapName( const idMaterial *mat ) {
-    if ( !rt_normalmap_enable.GetBool() ) { return NULL; }
-    const shaderStage_t *bump = mat ? mat->GetBumpStage() : NULL;
-    if ( !bump || !bump->texture.image ) { return NULL; }
-    const idImage *img = bump->texture.image;
-    if ( img->type != TT_2D || img->imgName.Length() <= 0 ) { return NULL; }
-    return img->imgName.c_str();
+const char * RTGL_NormalMapName( const idMaterial *mat ) {
+    if ( !rt_normalmap_enable.GetBool() || !mat ) { return NULL; }
+    const shaderStage_t *bump = mat->GetBumpStage();
+    if ( bump && bump->texture.image ) {
+        const idImage *img = bump->texture.image;
+        if ( img->type == TT_2D && img->imgName.Length() > 0 ) {
+            return img->imgName.c_str();
+        }
+    }
+    // For heat haze / air distortion materials (heatHazeWithMask.vfp), fragmentMap 1
+    // holds the tangent-space normal map (e.g. `textures/sfx/vp1.tga`, `textures/particles/vpring1.tga`).
+    if ( RTGL_IsHeatHazeOrPostProcess( mat ) ) {
+        for ( int i = 0; i < mat->GetNumStages(); i++ ) {
+            const shaderStage_t *st = mat->GetStage( i );
+            if ( st && st->newStage && st->newStage->numFragmentProgramImages > 1 ) {
+                const idImage *img = st->newStage->fragmentProgramImages[1];
+                if ( img && img->type == TT_2D && img->imgName.Length() > 0 && img->imgName[0] != '_' ) {
+                    return img->imgName.c_str();
+                }
+            }
+        }
+    }
+    return NULL;
+}
+
+// Extract fragmentMap 2 (distortion blend/alpha mask, e.g. `textures/sfx/vp1_alpha`,
+// `textures/particles/vpring2_alpha`) from heatHazeWithMask.vfp materials.
+const char * RTGL_HeatHazeMaskName( const idMaterial *mat ) {
+    if ( !mat || !RTGL_IsHeatHazeOrPostProcess( mat ) ) { return NULL; }
+    for ( int i = 0; i < mat->GetNumStages(); i++ ) {
+        const shaderStage_t *st = mat->GetStage( i );
+        if ( st && st->newStage && st->newStage->numFragmentProgramImages > 2 ) {
+            const idImage *img = st->newStage->fragmentProgramImages[2];
+            if ( img && img->type == TT_2D && img->imgName.Length() > 0 && img->imgName[0] != '_' ) {
+                return img->imgName.c_str();
+            }
+        }
+    }
+    return NULL;
 }
 
 // Return the 2D additive glow mask (`blend add`, e.g. `*_add.tga`) for an
@@ -166,8 +198,42 @@ static const char * RTGL_EmissiveMapName( const idMaterial *mat, const float *sh
 //                                   alphabet4, military_logo, mixom1, marsec, etc.)
 // Detection is by blend/stage properties, NOT by sort==SS_DECAL alone, because
 // many decals use "sort 1" or default translucent sort (SS_MEDIUM).
+bool RTGL_IsHeatHazeOrPostProcess( const idMaterial *mat ) {
+    if ( !mat ) { return false; }
+    // 1. Engine native semantic classification: any material capturing or sampling
+    // _currentRender is categorized by idMaterial::Common() as SS_POST_PROCESS (sort >= 100.0f).
+    if ( mat->GetSort() >= 100.0f ) { return true; }
+
+    // 2. Direct stage inspection: check if any stage or ARB2 program stage references _currentRender.
+    for ( int i = 0; i < mat->GetNumStages(); i++ ) {
+        const shaderStage_t *st = mat->GetStage( i );
+        if ( !st ) continue;
+        if ( st->texture.image == globalImages->currentRenderImage ) {
+            return true;
+        }
+        if ( st->newStage ) {
+            for ( int j = 0; j < st->newStage->numFragmentProgramImages; j++ ) {
+                if ( st->newStage->fragmentProgramImages[j] == globalImages->currentRenderImage ) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 static int RTGL_DecalBlendType( const idMaterial *mat ) {
     if ( !mat ) { return 0; }
+    // Air distortion / heat haze / post-process screen shaders (textures/sfx/vp1,
+    // vp1ghost, outdoor_glass1, heatHaze) MUST NEVER be classified as decals!
+    // Must check BEFORE the stage loop because multi-stage glass (outdoor_glass1)
+    // has both a _currentRender heatHaze stage and a gl_dst_color,gl_zero stage.
+    if ( RTGL_IsHeatHazeOrPostProcess( mat ) ) {
+        return 0;
+    }
+    if ( mat->Spectrum() != 0 ) {
+        return 0;
+    }
     bool hasDiffuse = false;
     bool hasBump = false;
     bool hasAlphaTest = false;
@@ -198,6 +264,12 @@ static int RTGL_DecalBlendType( const idMaterial *mat ) {
             hasCubemap = true;
         }
     }
+    // Air distortion / heat haze / post-process screen shaders (textures/sfx/vp1,
+    // vp1ghost, heatHaze) MUST NEVER be classified as decals or cutouts!
+    if ( RTGL_IsHeatHazeOrPostProcess( mat ) ) {
+        return 0;
+    }
+
     // In Doom 3's ARB2 backend, a `translucent` material with `blend diffusemap`
     // skips RB_T_FillDepthBuffer (never writes black) and is drawn in
     // vLight->translucentInteractions with additive `GL_ONE, GL_ONE` blending,
@@ -216,7 +288,16 @@ bool RTGL_IsDecal( const idMaterial *mat ) {
 
 bool RTGL_IsSkySurface( const idMaterial *mat ) {
     if ( !mat ) { return false; }
-    if ( mat->IsPortalSky() || mat->GetSort() == SS_PORTAL_SKY ) { return true; }
+    // NOTE: Do NOT use `mat->GetSort() == SS_PORTAL_SKY` here. GetSort() returns
+    // a free-form float and SS_PORTAL_SKY is only the enum value 1.0f; any
+    // ordinary material declared with `sort 1` (e.g. textures/decals/scorch,
+    // a bt==1 multiply-darkening decal) would be misclassified as a sky/
+    // portal brush, tagged RG_MESH_PRIMITIVE_SKY_VISIBILITY, and cause primary
+    // rays to storeSky() -> a solid clear-color board occluding the world.
+    // Real portalSky materials carry the dedicated `portalSky` boolean flag
+    // (set by the `portalSky` material keyword), so IsPortalSky() is both
+    // necessary and sufficient; skybox materials are identified by texgen.
+    if ( mat->IsPortalSky() ) { return true; }
     texgen_t tg = mat->Texgen();
     return ( tg == TG_SKYBOX_CUBE || tg == TG_WOBBLESKY_CUBE );
 }
@@ -392,6 +473,11 @@ static void RTGL_ProvideTexture( const char *loadName, const char *provideName, 
             }
         }
         clamp = true;
+    } else if ( idStr::Icmp( loadName, "_white_haze" ) == 0 ) {
+        width = 8;
+        height = 8;
+        pic = (byte *)R_StaticAlloc( width * height * 4 );
+        memset( pic, 255, width * height * 4 );
     } else if ( loadName[0] == '_' ) {
         return; // other procedural internal images (_white, _flat, etc.)
     } else {
@@ -447,6 +533,17 @@ static void RTGL_ProvideTexture( const char *loadName, const char *provideName, 
                 p[0] = (byte)( ( p[0] - mn ) >> 3 );
                 p[1] = (byte)( ( p[1] - mn ) >> 3 );
                 p[2] = (byte)( ( p[2] - mn ) >> 3 );
+            } else if ( bakeMode == 6 ) {
+                // Heat haze distortion alpha mask (fragmentMap 2: `textures/sfx/vp1_alpha`,
+                // `textures/particles/vpring2_alpha`, `vpring1_alpha`):
+                // Black (0,0,0) at the quad corners/edges means zero distortion (discard via
+                // RtAlphaTest.rahit); bright interior means active refractive distortion.
+                // Keep RGB pure white (255,255,255) so refractive media stays colorless.
+                int cov = ( mx >= 20 ) ? 255 : 0;
+                p[0] = 255;
+                p[1] = 255;
+                p[2] = 255;
+                p[3] = (byte)cov;
             } else if ( bakeMode == 4 ) {
                 // Translucent diffusemap decals (sentry_spot, floor_stripe,
                 // alphabet4, alphabet6, military_logo, corp_logo1, uacosticker,
@@ -547,6 +644,27 @@ static void RTGL_ProvideTexture( const char *loadName, const char *provideName, 
 // Returns a stable pointer or NULL (= albedo white).
 const char * RTGL_PrimaryTexture( const idMaterial *mat, const float *shaderRegisters ) {
     if ( !mat || mat->GetNumStages() <= 0 ) { return NULL; }
+
+    // Heat haze / air distortion / refractive post-process surfaces (`textures/sfx/vp1`,
+    // `vp1ghost`, `vpring*`, `outdoor_glass1`): stage 0 is an ARB2 `newStage` program
+    // (`heatHazeWithMask.vfp`) where `stage->texture.image` is NULL (`<none>`), while
+    // `fragmentMap 1` holds the distortion normal map and `fragmentMap 2` holds the
+    // distortion alpha mask. Provide both to RTGL1 so RtAlphaTest.rahit clips the
+    // black quad corners and RaygenPrimary.inl samples the normal map for refraction!
+    if ( RTGL_IsHeatHazeOrPostProcess( mat ) ) {
+        const char *nrmName  = RTGL_NormalMapName( mat );
+        const char *maskName = RTGL_HeatHazeMaskName( mat );
+        if ( maskName && maskName[0] ) {
+            const char *derived = RTGL_DerivedName( maskName, 6 );
+            RTGL_ProvideTexture( maskName, derived, 6, nrmName, true, NULL );
+            return derived;
+        }
+        if ( nrmName && nrmName[0] ) {
+            const char *derived = RTGL_DerivedName( nrmName, 60 );
+            RTGL_ProvideTexture( "_white_haze", derived, 0, nrmName, false, NULL );
+            return derived;
+        }
+    }
 
     const idImage *chosen = NULL;
     // Prefer SL_DIFFUSE, then SL_AMBIENT (excluding maskcolor stages), then
@@ -680,6 +798,26 @@ void RTGL_ClassifyMaterial( const idMaterial *mat,
     }
 
     if ( mat ) {
+        // Heat haze / air distortion / screen warp (textures/sfx/vp1, vp1ghost, heatHaze):
+        // Route them as ray-traced refractive WATER primitives in RTGL1!
+        // This keeps them out of the world rasterizer (no gray blocks), builds them
+        // into the BLAS as PT_REFRACT, and executes physical path-traced Snell's law
+        // refraction using their fragmentMap normal map and animated wave perturbation.
+        if ( RTGL_IsHeatHazeOrPostProcess( mat ) ) {
+            const bool isGlass = ( mat->GetSurfaceType() == SURFTYPE_GLASS ) ||
+                                 ( idStr::FindText( mat->GetName(), "glass", false ) >= 0 );
+            RgMeshPrimitiveFlags hFlags = ( isGlass ? RG_MESH_PRIMITIVE_GLASS : RG_MESH_PRIMITIVE_WATER ) |
+                                          RG_MESH_PRIMITIVE_IGNORE_REFRACT_AFTER |
+                                          RG_MESH_PRIMITIVE_NO_SHADOW |
+                                          RG_MESH_PRIMITIVE_DONT_GENERATE_NORMALS;
+            if ( !isGlass && RTGL_HeatHazeMaskName( mat ) != NULL ) {
+                hFlags |= RG_MESH_PRIMITIVE_ALPHA_TESTED;
+            }
+            *outFlags = hFlags;
+            *outEmissive = 0.0f;
+            return;
+        }
+
         materialCoverage_t cov = mat->Coverage();
 
         if ( cov == MC_TRANSLUCENT ) {
@@ -981,6 +1119,13 @@ void RTGL_GetMaterialPBR( const idMaterial *mat,
             hasSpecularStage = true;
             break;
         }
+    }
+
+    // Heat haze / air distortion / fluid surfaces: smooth dielectric for crisp physical refraction
+    if ( RTGL_IsHeatHazeOrPostProcess( mat ) ) {
+        *outRoughness = 0.05f;
+        *outMetallic  = 0.0f;
+        return;
     }
 
     // Decals and unlit surfaces without specular should stay matte dielectric.

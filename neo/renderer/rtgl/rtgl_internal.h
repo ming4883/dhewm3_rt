@@ -13,13 +13,14 @@
 #ifndef RG_USE_SURFACE_WIN32
 #define RG_USE_SURFACE_WIN32
 #endif
-#include "libs/rtgl/RTGL1.h"
+#include "RTGL1/RTGL1.h"
 
 #include "renderer/tr_local.h"
 #include "renderer/Image.h"
 #include "renderer/Material.h"
 #include "renderer/rtgl/rtgl_stats.h"
 #include "renderer/rtgl/rtgl_cvars.h"
+#include "renderer/rtgl/rtgl_heathaze.h"
 
 // ---------------------------------------------------------------------------
 // Shared state, defined in rtgl_main.cpp
@@ -67,6 +68,31 @@ const char * RTGL_GuiStageTexture( const shaderStage_t *stage, int bakeMode );
 const char * RTGL_LightTexture( const idImage *img );
 const char * RTGL_ProvideSkyFaceTexture( const char *cubeBaseName, cubeFiles_t cubeType, int side );
 bool         RTGL_IsSkySurface( const idMaterial *mat );
+bool         RTGL_IsHeatHazeOrPostProcess( const idMaterial *mat );
+const char * RTGL_NormalMapName( const idMaterial *mat );
+const char * RTGL_HeatHazeMaskName( const idMaterial *mat );
+
+static const int MAX_RTGL_DEFERRED_REGISTERS = 64;
+
+struct rtglDeferredPostSurf_t {
+    const idMaterial        *material;
+    const srfTriangles_t    *geo;
+    const viewEntity_t      *space;
+    float                   sort;
+    float                   registers[MAX_RTGL_DEFERRED_REGISTERS];
+    int                     numRegisters;
+    idStr                   normalMapName;
+    idStr                   maskName;
+    float                   scroll[2];
+    float                   deformMag;
+};
+
+void                       RTGL_ClearDeferredPostSurfs( void );
+bool                       RTGL_HasDeferredPostSurfs( void );
+int                        RTGL_GetNumDeferredPostSurfs( void );
+const rtglDeferredPostSurf_t * RTGL_GetDeferredPostSurf( int index );
+// Per-frame custom-pass payload (defined in rtgl_geometry.cpp).
+RgCustomPassHeatHazeFrame * RTGL_GetHeatHazePayload( void );
 bool         RTGL_IsDecal( const idMaterial *mat );  // multiply-blend decal detection (by blend bits, not sort)
 void         RTGL_ClassifyMaterial( const idMaterial *mat,
                                     RgMeshPrimitiveFlags *outFlags, float *outEmissive );
