@@ -539,7 +539,7 @@ void RTGL_EndFrame( void ) {
     texParams.clampDirect = 500.0f;
     texParams.clampIndirect = 500.0f;
     texParams.clampSpecular = 500.0f;
-    texParams.indirectMaxSolidAngle = 0.05f;
+    texParams.indirectMaxSolidAngle = idMath::PI * 0.25f; //0.05f;
     texParams.taaVarianceGamma = 6.0f;
     texParams.taaAntiSparkle = 0.0f;
 
